@@ -10,13 +10,17 @@ DOUBLE PENDULUM SIMULATION:
 import numpy as np
 import math
 import matplotlib.pyplot as plt
+from matplotlib import animation
 
 def main():
 
     # SIMULATION PARAMETERS
-    simulation_time = 3 # seconds
-    simulation_resolution = 0.1 # seconds
+    simulation_time = 15 # seconds
+    simulation_resolution = 0.001 # seconds
     simulation_steps = int(simulation_time / simulation_resolution) # How many times the simulation will run
+
+    # VISUALIZATION PARAMETERS
+    visualization_resolution = 0.1
 
     # PLANT PARAMETERS
     m1 = 1 # kg
@@ -36,7 +40,7 @@ def main():
     state_history = np.zeros((6,simulation_steps))
 
     # Initial_conditions
-    state_history[:,0] = [math.pi/2,0,0,0,0,0]
+    state_history[:,0] = [math.pi/6,0,0,0,0,0]
 
     # If controller is enabled, try to reach set point
     set_point = [math.pi, math.pi, 0,0,0,0]
@@ -77,6 +81,16 @@ def main():
 
     print('Simulation done!')
 
+    fig = plt.figure()
+    ax = plt.axes(xlim=(-1*(l1+l2), l1+l2), ylim=(-1*(l1+l2), l1+l2))
+    line, = ax.plot([], [], 'k-o')
+
+    ani = animation.FuncAnimation(fig, animation_update, frames=range(0,simulation_steps,int(visualization_resolution/simulation_resolution)), fargs=(state_history,l1,l2,line), blit=True,save_count=int(simulation_time/visualization_resolution),repeat=False)
+    plt.show()
+    s = ani.to_jshtml(fps=1/visualization_resolution)
+    with open(f'DP_{controller_type}.html', "w") as f:
+        f.write(s)
+
     
 def plant_update(states, control_signal, plant_parameters):
     # All motion is defined by the second-order terms.
@@ -115,6 +129,21 @@ def simulation_advance(states, state_change, simulation_resolution):
 
 
 
+def animation_update(i,state_history,l1,l2,line):
+    x= np.zeros(3)
+    x[0] = 0
+    x[1] = l1*math.sin(state_history[0,i])
+    x[2] = l1*math.sin(state_history[0,i]) + l2*math.sin(state_history[1,i])
+    y = np.zeros(3)
+    y[0] = 0
+    y[1] = -1*l1*math.cos(state_history[0,i])
+    y[2] =  -1*l1*math.cos(state_history[0,i]) - l2 *math.cos(state_history[1,i])
+    line.set_data(x,y)
+    plt.xlabel('x')
+    plt.ylabel('y')
+    plt.xlim((-1*(l1+l2), l1+l2))
+    plt.ylim((-1*(l1+l2), l1+l2))
+    return line,
 
 if __name__ == "__main__":
     main()
