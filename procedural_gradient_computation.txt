@@ -1,0 +1,120 @@
+
+def get_procedural_g(plant_parameters, states, lambdas, initial_conditions, set_point, controller_resolution):
+    (m1,m2,l1,l2,g) = plant_parameters
+    num_step = int((states.shape[1]-4)/7 + 1)
+    g_array  = np.zeros((1,7*(num_step-1)+6))
+    (x0,x1,x2,x3,x4,x5,u) = unpack_states(states,num_step)
+
+    for i in range(num_step):
+        # FORWARD DYNAMICS
+        if i != num_step-1:
+            # forward dynamic for x0
+            g_array[0,7*(i)+0] = -1*lambdas[0,6*(i)+0] - lambdas[0,6*(i)+2]*controller_resolution/((m1+m2)*l1)*(m2*l2*x5[0,i]*math.sin(x0[0,i]-x1[0,i])   +   m2*l2*x3[0,i]*x3[0,i]*math.cos(x0[0,i]-x1[0,i])  + (m1+m2)*math.cos(x0[0,i]) )
+            g_array[0,7*(i)+0] = g_array[0,7*(i)+0] - l1/l2*lambdas[0,6*(i)+3] * controller_resolution * (x2[0,i]*x2[0,i]*math.cos(x0[0,i]-x1[0,i]) + x4[0,i]*math.sin(x0[0,i]-x1[0,i]) )
+            # forward dynamic for x1
+            g_array[0,7*(i)+1] = -1*lambdas[0,6*(i)+1] + lambdas[0,6*(i)+2]*controller_resolution/((m1+m1)*l1)*(m2*l2*x5[0,i]*math.sin(x0[0,i]-x1[0,i])  +  m2*l2*x3[0,i]*x3[0,i]*math.cos(x0[0,i]-x1[0,i]))
+            g_array[0,7*(i)+1] = g_array[0,7*(i)+1] + l1/l2*lambdas[0,6*(i)+3]*controller_resolution*( x2[0,i]*x2[0,i]*math.cos(x0[0,i]-x1[0,i])   + g/l1*math.cos(x1[0,i])  + x4[0,i]*math.sin(x0[0,i]-x1[0,i]))
+            # forward dynamics for x2
+            g_array[0,7*(i)+2] = -1*lambdas[0,6*i]*controller_resolution - lambdas[0,6*i+3] - 2*lambdas[0,6*i+4]*l1/l2*controller_resolution*x2[0,i]*math.sin(x0[0,i]-x1[0,i])
+            # forward dynamics for x3
+            g_array[0,7*(i)+3] = -1 * lambdas[0,6*i+1]*controller_resolution - 2*lambdas[0,6*i+3]*controller_resolution/((m1+m2)*l1)*x3[0,i]*math.sin(x0[0,i]-x1[0,i]) - lambdas[0,6*i+4]
+            # forward dynamics for x4
+            # forward dynamics for x5 -- can these be left blank????
+            # forward dynamics for u
+            g_array[0,7*i + 6] = -1*lambdas[0,6*i+3]*controller_resolution
+        if i != 0:
+            g_array[0,7*(i)+0] = g_array[0,7*(i)+0] + lambdas[0,6*(i-1)+0]
+            g_array[0,7*(i)+1] = g_array[0,7*(i)+1] + lambdas[0,6*(i-1)+1]
+            g_array[0,7*(i)+2] = g_array[0,7*(i)+2] + lambdas[0,6*(i-1)+2]
+            g_array[0,7*(i)+3] = g_array[0,7*(i)+3] + lambdas[0,6*(i-1)+3]
+
+        # CONSTRAINTS
+        if i == 0:
+            # initial condition constraint for x0
+            g_array[0,7*(i)+0] = g_array[0,7*(i)+0] + 2*lambdas[0,7*i] * (x0[0,i] - initial_conditions[0])
+            # initial condition constraint for x1
+            g_array[0,7*(i)+1] = g_array[0,7*(i)+1] + 2*lambdas[0,7*i+1] * (x1[0,i] - initial_conditions[1])
+            # initial condition constraint for x2
+            g_array[0,7*(i)+2] = g_array[0,7*(i)+2] + 2*lambdas[0,7*i+2] * (x2[0,i] - initial_conditions[2])
+            # initial condition constraint for x3
+            g_array[0,7*(i)+3] = g_array[0,7*(i)+3] + 2*lambdas[0,7*i+3] * (x3[0,i] - initial_conditions[3])
+            # initial condition constraint for x4
+            g_array[0,7*(i)+4] = g_array[0,7*(i)+4] + 2*lambdas[0,7*i+4] * (x4[0,i] - initial_conditions[4])
+            # initial condition constraint for x5
+            g_array[0,7*(i)+5] = g_array[0,7*(i)+5] + 2*lambdas[0,7*i+5] * (x5[0,i] - initial_conditions[5])
+        if i == num_step-1:
+            # boundary condition constraint for x0
+            g_array[0,7*(i)+0] = g_array[0,7*(i)] + 2*lambdas[0,7*i+6] * (x0[0,i] - set_point[0])
+            # boundary condition constraint for x1
+            g_array[0,7*(i)+1] = g_array[0,7*(i)+1] + 2*lambdas[0,7*i+7] * (x1[0,i] - set_point[1])
+            # boundary condition constraint for x2
+            g_array[0,7*(i)+2] = g_array[0,7*(i)+2] + 2*lambdas[0,7*i+8] * (x2[0,i] - set_point[2])
+            # boundary condition constraint for x3
+            g_array[0,7*(i)+3] = g_array[0,7*(i)+3] + 2*lambdas[0,7*i+9] * (x3[0,i] - set_point[3])
+            # boundary condition constraint for x4
+            g_array[0,7*(i)+4] = g_array[0,7*(i)+4] + 2*lambdas[0,7*i+10] * (x4[0,i] - set_point[4])
+            # boundary condition constraint for x5
+            g_array[0,7*(i)+5] = g_array[0,7*(i)+5] + 2*lambdas[0,7*i+11] * (x5[0,i] - set_point[5])
+
+        # COST FUNCTION
+        if i != num_step-1:
+            # Error signal from x0
+            g_array[0,7*(i)+0] = g_array[0,7*(i)+0] + 2* (x0[0,i] - set_point[0])
+            # Error signal from  x1
+            g_array[0,7*(i)+1] = g_array[0,7*(i)+1] + 2* (x1[0,i] - set_point[1])
+            # Error signal from  x2
+            g_array[0,7*(i)+2] = g_array[0,7*(i)+2] + 2* (x2[0,i] - set_point[2])
+            # Error signal from  x3
+            g_array[0,7*(i)+3] = g_array[0,7*(i)+3] + 2* (x3[0,i] - set_point[3])
+            # Error signal from  x2
+            g_array[0,7*(i)+4] = g_array[0,7*(i)+4] + 2* (x4[0,i] - set_point[4])
+            # Error signal from  x3
+            g_array[0,7*(i)+5] = g_array[0,7*(i)+5] + 2* (x5[0,i] - set_point[5])
+            # Penalize high control signal from  u
+            g_array[0,7*(i)+6] = g_array[0,7*(i)+6] + 2* (u[0,i])
+
+    return g_array
+
+
+
+def get_eval_costs(state_sym, symbolic_costs, states):
+    num_step = int((states.shape[1]-4)/7 + 1)
+    (x0,x1,x2,x3,x4,x5,u) = unpack_states(states,num_step)
+    costs_eval = []
+    for n in range(len(symbolic_costs)):
+        req_symbols = symbolic_costs[n].free_symbols
+        for s in range(len(req_symbols)):
+            # a single required symbol for expression #n
+            set_element = req_symbols.pop()
+            symbol = str(set_element)
+            # find what symbol that actually is
+            state_id = symbol[0]
+            dof_id = int(symbol[1])
+            time_id = int(symbol[2:])
+            if state_id == 'x':
+                if dof_id == 0:
+                    value_for_symbol = x0[0,time_id]
+                elif dof_id == 1:
+                    value_for_symbol = x1[0,time_id]
+                elif dof_id == 2:
+                    value_for_symbol = x2[0,time_id]
+                elif dof_id == 3:
+                    value_for_symbol = x3[0,time_id]
+                elif dof_id == 4:
+                    value_for_symbol = x4[0,time_id]
+                elif dof_id == 5:
+                    value_for_symbol = x5[0,time_id]
+                else:
+                    print('ERROR!! < Unknown DOF ID > ')
+                    break
+            elif state_id == 'u':
+                value_for_symbol = u[0,time_id]
+            else:
+                print('ERROR!! < Unknown STATE ID > ')
+                break
+
+            if s == 0:
+                costs_eval.append(symbolic_costs[n].subs(set_element, value_for_symbol))
+            else:
+                costs_eval[n] = costs_eval[n].subs(set_element, value_for_symbol)
+    return costs_eval
