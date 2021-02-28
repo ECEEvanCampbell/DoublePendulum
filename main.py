@@ -12,11 +12,12 @@ import math
 import matplotlib.pyplot as plt
 from matplotlib import animation
 import sympy
+from sympy.tensor.array.sparse_ndim_array import MutableSparseNDimArray
 
 def main():
 
     # SIMULATION PARAMETERS
-    simulation_time = 3 # seconds
+    simulation_time = 4 # seconds
     simulation_resolution = 0.001 # seconds
     simulation_steps = int(simulation_time / simulation_resolution) # How many times the simulation will run
 
@@ -52,8 +53,10 @@ def main():
     if controller_type == 'simultaneous_control':
         print('in progress!')
         controller_resolution = 0.1 # seconds
-        control_end_time = simulation_time # seconds
-        control_sequence = simultaneous_control(plant_parameters, state_history[:,0], set_point, control_end_time, controller_resolution,3)
+        control_end_time = 2 # seconds
+        controller = simultaneous_control()
+
+        control_sequence = controller.get_control_law(plant_parameters, state_history[:,0], set_point, control_end_time, controller_resolution,4,True)
         # Run simultaneous control to get control signal array
     elif controller_type == 'PID':
         print('not coded yet!')
@@ -67,7 +70,6 @@ def main():
         control_signal = 0
 
     for i in range(1,simulation_steps):
-
 
         if controller_type == 'simultaneous_control':
             if i * simulation_resolution < control_end_time - controller_resolution:
@@ -127,8 +129,8 @@ def simulation_advance(states, state_change, simulation_resolution):
     alpha1 = state_change[0]
     alpha2 = state_change[1]
 
-    theta1 = theta1 + omega1 * simulation_resolution #+ 0.5 * alpha1*simulation_resolution*simulation_resolution
-    theta2 = theta2 + omega2 * simulation_resolution #+ 0.5 * alpha2*simulation_resolution*simulation_resolution
+    theta1 = theta1 + omega1 * simulation_resolution # + 0.5 * alpha1*simulation_resolution*simulation_resolution
+    theta2 = theta2 + omega2 * simulation_resolution # + 0.5 * alpha2*simulation_resolution*simulation_resolution
     omega1 = omega1 + alpha1 * simulation_resolution
     omega2 = omega2 + alpha2 * simulation_resolution
 
@@ -138,364 +140,241 @@ def simulation_advance(states, state_change, simulation_resolution):
 
 
 
-def simultaneous_control(plant_parameters, initial_conditions, set_point, end_time, controller_resolution, num_iter=1):
 
-    # HOW MANY CONTROL TIME POINTS
-    N = int(end_time/controller_resolution)
-    # HOW MANY STATES 7(N-1)+4
-    # x0,x1,x2,x3,x4,x5,u : 1->(N-1), x0,x1,x2,x3,x4,x5 : N
-    num_states = 7*(N-1) + 6
-    # HOW MANY CONSTRAINTS?
-    # <(N-1) * 6  Dynamics> + <12 BC>
-    num_constraints = 6*(N-1) + 12
-    # initial size of matrices
-    HL = np.zeros((num_states,num_states))
-    lambdas = np.ones((1,num_constraints))
-    states = np.zeros((1,num_states))
-    states[0,:6] = initial_conditions
+class simultaneous_control:
+    def __init__(self):
+        self.control_type = 'simultaneous'
 
-    # for plotting
-    x0_history = np.zeros((num_iter, N))
-    x1_history = np.zeros((num_iter, N))
-    x2_history = np.zeros((num_iter, N))
-    x3_history = np.zeros((num_iter, N))
-    u_history = np.zeros((num_iter, N-1))
+    def get_control_law(self, plant_parameters, initial_conditions, set_point, end_time, controller_resolution, num_iter=1, PLOTTING=False):
+        self.time_points = int(end_time/controller_resolution)
+        self.num_states = 7*(self.time_points-1)+6
+        self.num_constraints = 6*(self.time_points-1)+8
 
-    for i in range(num_iter):
-        state_sym, constraints_symbolic, _, symbolic_g, g_eval = get_symbolic_g(plant_parameters, states, lambdas, initial_conditions, set_point, controller_resolution)
-        constraints_eval = get_eval_constraints(state_sym, constraints_symbolic, states)
-        _, G_eval = get_symbolic_G(state_sym, constraints_symbolic, states)
-        _, Hl_eval = get_symbolic_Hl(state_sym, symbolic_g, states)
+        self.lambdas = np.ones((1, self.num_constraints))
+        self.states = np.zeros((1, self.num_states))
+        self.states[0,:6] = initial_conditions
+    
+        self.set_point = set_point
+        self.initial_conditions = initial_conditions
+        self.controller_resolution = controller_resolution
 
-        g_eval = np.reshape(np.array(g_eval,dtype = 'float'),(-1, 1))
-        constraints_eval = np.reshape(np.array(constraints_eval,dtype = 'float'),(-1, 1))
-        G_eval = np.array(G_eval,dtype = 'float')
-        Hl_eval = np.array(Hl_eval,dtype = 'float')
-
-
-        dx = -1*np.dot(np.linalg.pinv(Hl_eval),g_eval) + np.dot(np.linalg.pinv(G_eval),constraints_eval)
-        dlambdas = -1*np.transpose(np.dot(np.linalg.pinv(np.transpose(G_eval)),g_eval))
-        lambdas = lambdas + dlambdas
-
-        states = states + np.transpose(dx)
-
-        # get state vector and lambdas
-        (x0_history[i,:], x1_history[i,:],x2_history[i,:],x3_history[i,:],_,_,u_history[i,:]) = unpack_states(states,N)
+        # store the plant parameters given to the controller
+        self.plant_parameters = plant_parameters
+        # prepare the variables for symbolic math
+        self.get_state_sym()
+        # define the costs of the problem
+        self.get_costs()
+        # define symbolic expression for delF
+        self.get_delF()
         
-    fig, axs = plt.subplots(5,1)
-    for i in range(num_iter):
-        axs[0].plot(np.linspace(0,end_time, int(end_time/controller_resolution)), x0_history[i,:])
-        axs[0].set_title('Theta 1')
+        if PLOTTING:
+            x0_history = np.zeros((num_iter, self.time_points))
+            x1_history = np.zeros((num_iter, self.time_points))
+            x2_history = np.zeros((num_iter, self.time_points))
+            x3_history = np.zeros((num_iter, self.time_points))
+            u_history  = np.zeros((num_iter, self.time_points-1))
 
-        axs[1].plot(np.linspace(0,end_time, int(end_time/controller_resolution)), x1_history[i,:])
-        axs[1].set_title('Theta 2')
+        for i in range(num_iter):
+            # TODO: If I define lambdas in constraint equations as variables, then these 4 functions can be called outside loop
+            # define the constraints of the problem
+            self.get_constraints()
+            # define symbolic expression for delL
+            self.get_delL()
+            # define symbolic expression for G
+            self.get_G()
+            # define symbolic expression for Hl
+            self.get_Hl()
 
-        axs[2].plot(np.linspace(0,end_time, int(end_time/controller_resolution)), x2_history[i,:])
-        axs[2].set_title('DTheta 1')
+            constraints = eval_expression(self.constraints, self.states, self.time_points)
+            #del_L       = eval_expression(self.del_L,       self.states, self.time_points)
+            del_F       = eval_expression(self.del_F,       self.states, self.time_points)
+            G           = eval_expression(self.G,           self.states, self.time_points)
+            Hl          = eval_expression(self.Hl,          self.states, self.time_points)
+            
+            KKT_top = np.concatenate(  (Hl,np.transpose(G)), axis=1)
+            KKT_bot = np.concatenate(  (G, np.zeros((G.shape[0],KKT_top.shape[1] - G.shape[1])))  , axis=1   )
+            KKT = np.concatenate(  (KKT_top, KKT_bot),  axis=0  )
 
-        axs[3].plot(np.linspace(0,end_time, int(end_time/controller_resolution)), x3_history[i,:])
-        axs[3].set_title('DTheta 2')
+            perform_expression = np.concatenate(   ( del_F, constraints ), axis=0)
 
-        axs[4].plot(np.linspace(0,end_time-controller_resolution, int(end_time/controller_resolution)-1), u_history[i,:])
-        axs[4].set_title('U')
-    for ax in axs.flat:
-        ax.set(xlabel='Time', ylabel='Value')
-    plt.show()
-    
-    control_sequence = u_history[-1,:]
-    return control_sequence
+            delta = -1* np.dot( np.linalg.pinv(KKT), perform_expression)
+            dx = delta[:self.num_states , 0]
+            #dlambdas = delta[self.num_states:,0]
 
+            self.lambdas = delta[self.num_states:,0].reshape([1,-1])
+            self.states = self.states + dx
 
-def get_symbolic_g(plant_parameters, states, lambdas, initial_conditions, set_point, controller_resolution):
-    num_step = int((states.shape[1]-6)/7 + 1)
-    (m1,m2,l1,l2,g) = plant_parameters
-    (x0,x1,x2,x3,x4,x5,u) = unpack_states(states,num_step)
-    # write down all constraints in symbolic form
-    state_sym = {}
-    for n in range(num_step):
-        state_sym[0,n] = sympy.symbols('x0'+str(n))
-        state_sym[1,n] = sympy.symbols('x1'+str(n))
-        state_sym[2,n] = sympy.symbols('x2'+str(n))
-        state_sym[3,n] = sympy.symbols('x3'+str(n))
-        state_sym[4,n] = sympy.symbols('x4'+str(n))
-        state_sym[5,n] = sympy.symbols('x5'+str(n))
-        state_sym[6,n] = sympy.symbols('u1'+str(n))
-    
-    constraints = []
-    # Dynamics based constraints
-    for n in range(1,num_step):
-        # Each of these get a lambda in front of them.
-        # x0n
-        constraints.append(lambdas[0,6*(n-1)+0] * (state_sym[0,n]-state_sym[0,n-1]- state_sym[2,n-1]*controller_resolution))
-        # x1n
-        constraints.append(lambdas[0,6*(n-1)+1] * (state_sym[1,n]-state_sym[1,n-1]- state_sym[3,n-1]*controller_resolution))
-        # x2n
-        #constraints.append(lambdas[0,6*(n-1)+2] * (state_sym[2,n]-state_sym[2,n-1]  + m2*l2*state_sym[5,n-1]*sympy.cos(state_sym[0,n-1]-state_sym[1,n-1])*controller_resolution/((m1+m2)*l1)  - m2*l2*state_sym[3,n-1]**2*sympy.sin(state_sym[0,n-1]-state_sym[1,n-1]) *controller_resolution/((m1+m2)*l1)    - g/l1*sympy.sin(state_sym[0,n-1])*controller_resolution +state_sym[6,n-1]*controller_resolution  )   )
-        constraints.append(lambdas[0,6*(n-1)+2] * (state_sym[2,n]-state_sym[2,n-1]- state_sym[4,n-1]*controller_resolution))
-        # x3n
-        #constraints.append(lambdas[0,6*(n-1)+3] * (state_sym[3,n]-state_sym[3,n-1]  - l1/l2*state_sym[2,n-1]**2*sympy.sin(state_sym[0,n-1]-state_sym[1,n-1])*controller_resolution             + g/l2*sympy.sin(state_sym[1,n-1])*controller_resolution + l1/l2*state_sym[4,n-1]*sympy.cos(state_sym[0,n-1]-state_sym[1,n-1])*controller_resolution              )      )
-        constraints.append(lambdas[0,6*(n-1)+3] * (state_sym[3,n]-state_sym[3,n-1]- state_sym[5,n-1]*controller_resolution))
-        # x4n
-        constraints.append(lambdas[0,6*(n-1)+4] * (state_sym[4,n] + m2*l2/((m1+m2)*l1)*state_sym[5,n-1] * sympy.cos(state_sym[0,n-1]-state_sym[1,n-1]) *controller_resolution   + m2*l2/((m1+m2)*l1)*state_sym[3,n-1]**2 *sympy.sin(state_sym[0,n-1]-state_sym[1,n-1]) *controller_resolution +g/l1*sympy.sin(state_sym[0,n-1])*controller_resolution -state_sym[6,n-1]*controller_resolution  )   )
-        # x5n
-        constraints.append(lambdas[0,6*(n-1)+5] * (state_sym[5,n] -l1/l2*state_sym[2,n-1]**2 *sympy.sin(state_sym[0,n-1]-state_sym[1,n-1]) *controller_resolution   +g/l2*sympy.sin(state_sym[1,n-1]) *controller_resolution   +l1/l2*state_sym[4,n-1]*sympy.cos(state_sym[0,n-1]-state_sym[1,n-1]) *controller_resolution   )  )
+            # get state vector and lambdas
+            (x0_history[i,:], x1_history[i,:],x2_history[i,:],x3_history[i,:],_,_,u_history[i,:]) = unpack_states(self.states,self.time_points)
 
-    # Initial conditions boundary
-    constraints.append(lambdas[0,6*(n)+0]  *  (state_sym[0,0] - initial_conditions[0])**2 )
-    constraints.append(lambdas[0,6*(n)+1]  *  (state_sym[1,0] - initial_conditions[1])**2 )
-    constraints.append(lambdas[0,6*(n)+2]  *  (state_sym[2,0] - initial_conditions[2])**2 )
-    constraints.append(lambdas[0,6*(n)+3]  *  (state_sym[3,0] - initial_conditions[3])**2 )
-    constraints.append(lambdas[0,6*(n)+4]  *  (state_sym[4,0] - initial_conditions[4])**2 )
-    constraints.append(lambdas[0,6*(n)+5]  *  (state_sym[5,0] - initial_conditions[5])**2 )
+        if PLOTTING:
+            _, axs = plt.subplots(5,1)
+            for i in range(num_iter):
+                axs[0].plot(np.linspace(0,end_time, int(end_time/controller_resolution)), x0_history[i,:])
+                axs[0].set_title('Theta 1')
 
-    # End condition boundary
-    constraints.append(lambdas[0,6*(n)+6]  *   (state_sym[0,num_step-1] - set_point[0])**2 )
-    constraints.append(lambdas[0,6*(n)+7]  *   (state_sym[1,num_step-1] - set_point[1])**2 )
-    constraints.append(lambdas[0,6*(n)+8]  *   (state_sym[2,num_step-1] - set_point[2])**2 )
-    constraints.append(lambdas[0,6*(n)+9]  *   (state_sym[3,num_step-1] - set_point[3])**2 )
-    constraints.append(lambdas[0,6*(n)+10] *   (state_sym[4,num_step-1] - set_point[4])**2 )
-    constraints.append(lambdas[0,6*(n)+11] *   (state_sym[5,num_step-1] - set_point[5])**2 )
+                axs[1].plot(np.linspace(0,end_time, int(end_time/controller_resolution)), x1_history[i,:])
+                axs[1].set_title('Theta 2')
 
-    # Costs
-    costs = []
-    for n in range(num_step-1):
-        # minimize error at each time step
-        costs.append((state_sym[0,n]-set_point[0])**2)
-        costs.append((state_sym[1,n]-set_point[1])**2)
-        #costs.append((state_sym[2,n]-set_point[2])**2)
-        #costs.append((state_sym[3,n]-set_point[3])**2)
-        #costs.append((state_sym[4,n]-set_point[4])**2) # Were these terms penalizing too hard?
-        #costs.append((state_sym[5,n]-set_point[5])**2)
-        # minimize the control signal at each time set
-        #if n != num_step:
-        #    costs.append(state_sym[6,n]**2) # Currently there is very very small control signal. Should I remove this?
+                axs[2].plot(np.linspace(0,end_time, int(end_time/controller_resolution)), x2_history[i,:])
+                axs[2].set_title('DTheta 1')
 
-    # Now differentiate all the constraints to get the gradient
-    symbolic_g = [0]*(7*num_step -1)
-    for n in range(num_step):
-        # Gradient from constraints
-        for c in range(len(constraints)):
-            # states PDE
-            symbolic_g[7*n+0] = symbolic_g[7*n+0] + sympy.diff(constraints[c],state_sym[0,n])
-            symbolic_g[7*n+1] = symbolic_g[7*n+1] + sympy.diff(constraints[c],state_sym[1,n])
-            symbolic_g[7*n+2] = symbolic_g[7*n+2] + sympy.diff(constraints[c],state_sym[2,n])
-            symbolic_g[7*n+3] = symbolic_g[7*n+3] + sympy.diff(constraints[c],state_sym[3,n])
-            symbolic_g[7*n+4] = symbolic_g[7*n+4] + sympy.diff(constraints[c],state_sym[4,n])
-            symbolic_g[7*n+5] = symbolic_g[7*n+5] + sympy.diff(constraints[c],state_sym[5,n])
-            if n != num_step-1:
-                # control signal PDE
-                symbolic_g[7*n+6] = symbolic_g[7*n+6] + sympy.diff(constraints[c],state_sym[6,n])
-        # Gradient from costs
-        for c in range(len(costs)):
-            # states PDE
-            symbolic_g[7*n+0] = symbolic_g[7*n+0] + sympy.diff(costs[c],state_sym[0,n])
-            symbolic_g[7*n+1] = symbolic_g[7*n+1] + sympy.diff(costs[c],state_sym[1,n])
-            symbolic_g[7*n+2] = symbolic_g[7*n+2] + sympy.diff(costs[c],state_sym[2,n])
-            symbolic_g[7*n+3] = symbolic_g[7*n+3] + sympy.diff(costs[c],state_sym[3,n])
-            symbolic_g[7*n+4] = symbolic_g[7*n+4] + sympy.diff(costs[c],state_sym[4,n])
-            symbolic_g[7*n+5] = symbolic_g[7*n+5] + sympy.diff(costs[c],state_sym[5,n])
-            if n != num_step-1:
-                # control signal PDE
-                symbolic_g[7*n+6] = symbolic_g[7*n+6] + sympy.diff(costs[c],state_sym[6,n])
+                axs[3].plot(np.linspace(0,end_time, int(end_time/controller_resolution)), x3_history[i,:])
+                axs[3].set_title('DTheta 2')
 
-    # Now eval the symbolic gradient
-    g_eval = [0]*states.shape[1]
-    for n in range(len(symbolic_g)):
+                axs[4].plot(np.linspace(0,end_time-controller_resolution, int(end_time/controller_resolution)-1), u_history[i,:])
+                axs[4].set_title('U')
+            for ax in axs.flat:
+                ax.set(xlabel='Time', ylabel='Value')
+            plt.show()
+        
+        control_sequence = u_history[-1,:]
+        return control_sequence
 
-        req_symbols = symbolic_g[n].free_symbols
-        g_eval[n] = symbolic_g[n]
-        if bool(req_symbols):
-            for s in range(len(req_symbols)):
-                # a single required symbol for expression #n
-                set_element = req_symbols.pop()
-                symbol = str(set_element)
-                # find what symbol that actually is
-                state_id = symbol[0]
-                dof_id = int(symbol[1])
-                time_id = int(symbol[2:])
-                if state_id == 'x':
-                    if dof_id == 0:
-                        value_for_symbol = x0[0,time_id]
-                    elif dof_id == 1:
-                        value_for_symbol = x1[0,time_id]
-                    elif dof_id == 2:
-                        value_for_symbol = x2[0,time_id]
-                    elif dof_id == 3:
-                        value_for_symbol = x3[0,time_id]
-                    elif dof_id == 4:
-                        value_for_symbol = x4[0,time_id]
-                    elif dof_id == 5:
-                        value_for_symbol = x5[0,time_id]
-                    else:
-                        print('ERROR!! < Unknown DOF ID > ')
-                        break
-                elif state_id == 'u':
-                    value_for_symbol = u[0,time_id]
-                else:
-                    print('ERROR!! < Unknown STATE ID > ')
-                    break
-                g_eval[n] = g_eval[n].subs(set_element, value_for_symbol)
+    def get_state_sym(self):
+        state_sym = {}
+        for n in range(self.time_points):
+            state_sym[0,n] = sympy.symbols('x0'+str(n))
+            state_sym[1,n] = sympy.symbols('x1'+str(n))
+            state_sym[2,n] = sympy.symbols('x2'+str(n))
+            state_sym[3,n] = sympy.symbols('x3'+str(n))
+            state_sym[4,n] = sympy.symbols('x4'+str(n))
+            state_sym[5,n] = sympy.symbols('x5'+str(n))
+            state_sym[6,n] = sympy.symbols('u1'+str(n))
+        self.state_sym = state_sym
 
-    return state_sym, constraints, costs, symbolic_g, g_eval
+    def get_constraints(self):
+        (m1,m2,l1,l2,g) = self.plant_parameters
+        constraints = []
+        # Dynamics based constraints
+        for n in range(1,self.time_points):
+            # Each of these get a lambda in front of them.
+            # x0n
+            constraints.append(self.lambdas[0,6*(n-1)+0] * (self.state_sym[0,n]-self.state_sym[0,n-1]- self.state_sym[2,n-1]*self.controller_resolution))
+            # x1n
+            constraints.append(self.lambdas[0,6*(n-1)+1] * (self.state_sym[1,n]-self.state_sym[1,n-1]- self.state_sym[3,n-1]*self.controller_resolution))
+            # x2n
+            constraints.append(self.lambdas[0,6*(n-1)+2] * (self.state_sym[2,n]-self.state_sym[2,n-1]- self.state_sym[4,n-1]*self.controller_resolution))
+            # x3n
+            constraints.append(self.lambdas[0,6*(n-1)+3] * (self.state_sym[3,n]-self.state_sym[3,n-1]- self.state_sym[5,n-1]*self.controller_resolution))
+            # x4n
+            constraints.append(self.lambdas[0,6*(n-1)+4] * (self.state_sym[4,n] + m2*l2/((m1+m2)*l1)*self.state_sym[5,n-1] * sympy.cos(self.state_sym[0,n-1]-self.state_sym[1,n-1])   + m2*l2/((m1+m2)*l1)*self.state_sym[3,n-1]**2 *sympy.sin(self.state_sym[0,n-1]-self.state_sym[1,n-1]) +g/l1*sympy.sin(self.state_sym[0,n-1]) -self.state_sym[6,n-1]  )   )
+            # x5n
+            constraints.append(self.lambdas[0,6*(n-1)+5] * (self.state_sym[5,n] -l1/l2*self.state_sym[2,n-1]**2 * sympy.sin(self.state_sym[0,n-1]-self.state_sym[1,n-1])     +g/l2*sympy.sin(self.state_sym[1,n-1])  +l1/l2*self.state_sym[4,n-1]*sympy.cos(self.state_sym[0,n-1]-self.state_sym[1,n-1])  )  )
+        # Initial conditions boundary
+        constraints.append(self.lambdas[0,6*(n)+0]  *  (self.state_sym[0,0] - self.initial_conditions[0])**2 )
+        constraints.append(self.lambdas[0,6*(n)+1]  *  (self.state_sym[1,0] - self.initial_conditions[1])**2 )
+        constraints.append(self.lambdas[0,6*(n)+2]  *  (self.state_sym[2,0] - self.initial_conditions[2])**2 )
+        constraints.append(self.lambdas[0,6*(n)+3]  *  (self.state_sym[3,0] - self.initial_conditions[3])**2 )
+        constraints.append(self.lambdas[0,6*(n)+4]  *  (self.state_sym[4,0] - self.initial_conditions[4])**2 )
+        constraints.append(self.lambdas[0,6*(n)+5]  *  (self.state_sym[5,0] - self.initial_conditions[5])**2 )
+        # End condition boundary
+        constraints.append(self.lambdas[0,6*(n)+6]  *   (self.state_sym[0,self.time_points-1] - self.set_point[0])**2 )
+        constraints.append(self.lambdas[0,6*(n)+7]  *   (self.state_sym[1,self.time_points-1] - self.set_point[1])**2 )
+        #constraints.append(self.lambdas[0,6*(n)+8]  *   (self.state_sym[2,self.time_points-1] - self.set_point[2])**2 )
+        #constraints.append(self.lambdas[0,6*(n)+9]  *   (self.state_sym[3,self.time_points-1] - self.set_point[3])**2 )
+        #constraints.append(self.lambdas[0,6*(n)+10] *   (self.state_sym[4,self.time_points-1] - self.set_point[4])**2 )
+        #constraints.append(self.lambdas[0,6*(n)+11] *   (self.state_sym[5,self.time_points-1] - self.set_point[5])**2 )
 
+        constraints = MutableSparseNDimArray(constraints, (len(constraints),1))
+        self.constraints = constraints
 
-def get_symbolic_G(state_sym, constraints, states):
-    num_step = int((states.shape[1]-6)/7 + 1)
-    (x0,x1,x2,x3,x4,x5,u) = unpack_states(states,num_step)
-    # Differentiate each constraint by each state
-    symbolic_G = [ [0]*states.shape[1] for _ in range(len(constraints)) ]
-    for c in range(len(constraints)):
-        for n in range(num_step):
-            symbolic_G[c][7*(n)+0] = sympy.diff(constraints[c], state_sym[0,n])
-            symbolic_G[c][7*(n)+1] = sympy.diff(constraints[c], state_sym[1,n])
-            symbolic_G[c][7*(n)+2] = sympy.diff(constraints[c], state_sym[2,n])
-            symbolic_G[c][7*(n)+3] = sympy.diff(constraints[c], state_sym[3,n])
-            symbolic_G[c][7*(n)+4] = sympy.diff(constraints[c], state_sym[4,n])
-            symbolic_G[c][7*(n)+5] = sympy.diff(constraints[c], state_sym[5,n])
-            if n != num_step-1:
-                symbolic_G[c][7*(n)+6] = sympy.diff(constraints[c], state_sym[0,n])
-    # Now eval the symbolic jacobian
-    G_eval = [ [0]*states.shape[1] for _ in range(len(constraints)) ]
-    for c in range(len(G_eval)):
-        for n in range(len(G_eval[0])):
-            G_eval[c][n] = symbolic_G[c][n]
-            req_symbols = symbolic_G[c][n].free_symbols
-            if bool(req_symbols):
-                for s in range(len(req_symbols)):
-                    # a single required symbol for expression #n
-                    set_element = req_symbols.pop()
-                    symbol = str(set_element)
-                    # find what symbol that actually is
-                    state_id = symbol[0]
-                    dof_id = int(symbol[1])
-                    time_id = int(symbol[2:])
-                    if state_id == 'x':
-                        if dof_id == 0:
-                            value_for_symbol = x0[0,time_id]
-                        elif dof_id == 1:
-                            value_for_symbol = x1[0,time_id]
-                        elif dof_id == 2:
-                            value_for_symbol = x2[0,time_id]
-                        elif dof_id == 3:
-                            value_for_symbol = x3[0,time_id]
-                        elif dof_id == 4:
-                            value_for_symbol = x4[0,time_id]
-                        elif dof_id == 5:
-                            value_for_symbol = x5[0,time_id]
-                        else:
-                            print('ERROR!! < Unknown DOF ID > ')
-                            break
-                    elif state_id == 'u':
-                        value_for_symbol = u[0,time_id]
-                    else:
-                        print('ERROR!! < Unknown STATE ID > ')
-                        break
-                    G_eval[c][n] = G_eval[c][n].subs(set_element, value_for_symbol)               
-    return symbolic_G, G_eval
+    def get_costs(self):
+        costs = []
+        for n in range(self.time_points):
+            # minimize error at each time step
+            costs.append((self.state_sym[0,n]-self.set_point[0])**2)
+            costs.append((self.state_sym[1,n]-self.set_point[1])**2)
+            costs.append((self.state_sym[2,n]-self.set_point[2])**2)
+            costs.append((self.state_sym[3,n]-self.set_point[3])**2)
+            #costs.append((self.state_sym[4,n]-self.set_point[4])**2) 
+            #costs.append((self.state_sym[5,n]-self.set_point[5])**2)
+            # minimize the control signal at each time set
+            #if n != self.time_points:
+            #    costs.append(self.state_sym[6,n]**2) 
+            
+        costs = MutableSparseNDimArray(costs, (len(costs),1) )
+        self.costs = costs
+
+    def get_delL(self):
+        del_L = sympy.zeros(self.num_states,1)
+        for n in range(self.time_points):
+            # Gradient from constraints
+            for c in range(self.constraints.shape[0]):
+                # states PDE
+                del_L[7*n+0,0] = del_L[7*n+0,0] + sympy.diff(self.constraints[c,0],self.state_sym[0,n])
+                del_L[7*n+1,0] = del_L[7*n+1,0] + sympy.diff(self.constraints[c,0],self.state_sym[1,n])
+                del_L[7*n+2,0] = del_L[7*n+2,0] + sympy.diff(self.constraints[c,0],self.state_sym[2,n])
+                del_L[7*n+3,0] = del_L[7*n+3,0] + sympy.diff(self.constraints[c,0],self.state_sym[3,n])
+                del_L[7*n+4,0] = del_L[7*n+4,0] + sympy.diff(self.constraints[c,0],self.state_sym[4,n])
+                del_L[7*n+5,0] = del_L[7*n+5,0] + sympy.diff(self.constraints[c,0],self.state_sym[5,n])
+                if n != self.time_points-1:
+                    # control signal PDE
+                    del_L[7*n+6,0] = del_L[7*n+6,0] + sympy.diff(self.constraints[c,0],self.state_sym[6,n])
+            # Gradient from costs
+            for c in range(self.costs.shape[0]):
+                # states PDE
+                del_L[7*n+0,0] = del_L[7*n+0,0] + sympy.diff(self.costs[c,0],self.state_sym[0,n])
+                del_L[7*n+1,0] = del_L[7*n+1,0] + sympy.diff(self.costs[c,0],self.state_sym[1,n])
+                del_L[7*n+2,0] = del_L[7*n+2,0] + sympy.diff(self.costs[c,0],self.state_sym[2,n])
+                del_L[7*n+3,0] = del_L[7*n+3,0] + sympy.diff(self.costs[c,0],self.state_sym[3,n])
+                del_L[7*n+4,0] = del_L[7*n+4,0] + sympy.diff(self.costs[c,0],self.state_sym[4,n])
+                del_L[7*n+5,0] = del_L[7*n+5,0] + sympy.diff(self.costs[c,0],self.state_sym[5,n])
+                if n != self.time_points-1:
+                    # control signal PDE
+                    del_L[7*n+6,0] = del_L[7*n+6,0] + sympy.diff(self.costs[c,0],self.state_sym[6,n])
+        self.del_L = del_L
+
+    def get_delF(self):
+        del_F = sympy.zeros(self.num_states,1)
+        for n in range(self.time_points):
+            # Gradient from costs
+            for c in range(self.costs.shape[0]):
+                # states PDE
+                del_F[7*n+0,0] = del_F[7*n+0,0] + sympy.diff(self.costs[c,0],self.state_sym[0,n])
+                del_F[7*n+1,0] = del_F[7*n+1,0] + sympy.diff(self.costs[c,0],self.state_sym[1,n])
+                del_F[7*n+2,0] = del_F[7*n+2,0] + sympy.diff(self.costs[c,0],self.state_sym[2,n])
+                del_F[7*n+3,0] = del_F[7*n+3,0] + sympy.diff(self.costs[c,0],self.state_sym[3,n])
+                del_F[7*n+4,0] = del_F[7*n+4,0] + sympy.diff(self.costs[c,0],self.state_sym[4,n])
+                del_F[7*n+5,0] = del_F[7*n+5,0] + sympy.diff(self.costs[c,0],self.state_sym[5,n])
+                if n != self.time_points-1:
+                    # control signal PDE
+                    del_F[7*n+6,0] = del_F[7*n+6,0] + sympy.diff(self.costs[c,0],self.state_sym[6,n])
+        self.del_F = del_F
+        
+    def get_G(self):
+        G = sympy.zeros(self.num_constraints, self.num_states)
+        for n in range(self.time_points):
+            for c in range(self.constraints.shape[0]):
+                G[c,7*n]   = sympy.diff(self.constraints[c,0], self.state_sym[0,n])
+                G[c,7*n+1] = sympy.diff(self.constraints[c,0], self.state_sym[1,n])
+                G[c,7*n+2] = sympy.diff(self.constraints[c,0], self.state_sym[2,n])
+                G[c,7*n+3] = sympy.diff(self.constraints[c,0], self.state_sym[3,n])
+                G[c,7*n+4] = sympy.diff(self.constraints[c,0], self.state_sym[4,n])
+                G[c,7*n+5] = sympy.diff(self.constraints[c,0], self.state_sym[5,n])
+                if n != self.time_points-1:
+                    G[c,7*+6] = sympy.diff(self.constraints[c,0], self.state_sym[6,n])
+        self.G = G
+
+    def get_Hl(self):
+        Hl = sympy.zeros(self.num_states, self.num_states)
+        for l in range(self.del_L.shape[0]):
+            for n in range(self.time_points):
+                Hl[l,7*n]   = sympy.diff(self.del_F[l,0], self.state_sym[0,n])
+                Hl[l,7*n+1] = sympy.diff(self.del_F[l,0], self.state_sym[1,n])
+                Hl[l,7*n+2] = sympy.diff(self.del_F[l,0], self.state_sym[2,n])
+                Hl[l,7*n+3] = sympy.diff(self.del_F[l,0], self.state_sym[3,n])
+                Hl[l,7*n+4] = sympy.diff(self.del_F[l,0], self.state_sym[4,n])
+                Hl[l,7*n+5] = sympy.diff(self.del_F[l,0], self.state_sym[5,n])
+                if n!= self.time_points-1:
+                    Hl[l,7*n+6] = sympy.diff(self.del_F[l,0], self.state_sym[6,n])
+        self.Hl = Hl
 
 
-def get_symbolic_Hl(state_sym, symbolic_g, states):
-    # Get the Hessian of the Legrangian.
-    # Previously, we had found the gradient of the Legrangian (symbolic_g <- get_symbolic_g)
-    # We only need to differentiate one more time to get the Hessian.
-    num_step = int((states.shape[1]-6)/7 + 1)
-    (x0,x1,x2,x3,x4,x5,u) = unpack_states(states,num_step)
-    # Differentiate each constraint by each state
-    symbolic_Hl = [ [0]*states.shape[1] for _ in range(states.shape[1]) ]
-
-    for s1 in range(num_step-1):
-        for s2 in range(num_step-1):
-            symbolic_Hl[7*s1+0][7*s2+0] = sympy.diff(symbolic_g[s1],state_sym[0,s2])
-            symbolic_Hl[7*s1+0][7*s2+1] = sympy.diff(symbolic_g[s1],state_sym[1,s2])
-            symbolic_Hl[7*s1+0][7*s2+2] = sympy.diff(symbolic_g[s1],state_sym[2,s2])
-            symbolic_Hl[7*s1+0][7*s2+3] = sympy.diff(symbolic_g[s1],state_sym[3,s2])
-            symbolic_Hl[7*s1+0][7*s2+4] = sympy.diff(symbolic_g[s1],state_sym[4,s2])
-            symbolic_Hl[7*s1+0][7*s2+5] = sympy.diff(symbolic_g[s1],state_sym[5,s2])
-            if s2 != num_step-1:
-                # control signal PDE
-                symbolic_Hl[7*s1+0][7*s2+7] = sympy.diff(symbolic_g[s1],state_sym[6,s2])
-    # Now eval the symbolic Hessian
-    Hl_eval = [ [0]*states.shape[1] for _ in range(states.shape[1]) ]
-    for s1 in range(len(Hl_eval)):
-        for s2 in range(len(Hl_eval[0])):
-            Hl_eval[s1][s2] = symbolic_Hl[s1][s2]
-            if hasattr(symbolic_Hl[s1][s2],'free_symbols'):
-                req_symbols = symbolic_Hl[s1][s2].free_symbols
-                if bool(req_symbols):
-                    for s in range(len(req_symbols)):
-                        # a single required symbol for expression #n
-                        set_element = req_symbols.pop()
-                        symbol = str(set_element)
-                        # find what symbol that actually is
-                        state_id = symbol[0]
-                        dof_id = int(symbol[1])
-                        time_id = int(symbol[2:])
-                        if state_id == 'x':
-                            if dof_id == 0:
-                                value_for_symbol = x0[0,time_id]
-                            elif dof_id == 1:
-                                value_for_symbol = x1[0,time_id]
-                            elif dof_id == 2:
-                                value_for_symbol = x2[0,time_id]
-                            elif dof_id == 3:
-                                value_for_symbol = x3[0,time_id]
-                            elif dof_id == 4:
-                                value_for_symbol = x4[0,time_id]
-                            elif dof_id == 5:
-                                value_for_symbol = x5[0,time_id]
-                            else:
-                                print('ERROR!! < Unknown DOF ID > ')
-                                break
-                        elif state_id == 'u':
-                            value_for_symbol = u[0,time_id]
-                        else:
-                            print('ERROR!! < Unknown STATE ID > ')
-                            break
-                        Hl_eval[s1][s2] = Hl_eval[s1][s2].subs(set_element, value_for_symbol)               
-    return symbolic_Hl, Hl_eval
-
-
-
-def get_eval_constraints(state_sym, constraints_symbolic, states):
-    num_step = int((states.shape[1]-4)/7 + 1)
-    (x0,x1,x2,x3,x4,x5,u) = unpack_states(states,num_step)
-    constraints_eval = [0]*len(constraints_symbolic)
-    for n in range(len(constraints_symbolic)):
-        req_symbols = constraints_symbolic[n].free_symbols
-        constraints_eval[n] = constraints_symbolic[n]
-        if bool(req_symbols):
-            for s in range(len(req_symbols)):
-                # a single required symbol for expression #n
-                set_element = req_symbols.pop()
-                symbol = str(set_element)
-                # find what symbol that actually is
-                state_id = symbol[0]
-                dof_id = int(symbol[1])
-                time_id = int(symbol[2:])
-                if state_id == 'x':
-                    if dof_id == 0:
-                        value_for_symbol = x0[0,time_id]
-                    elif dof_id == 1:
-                        value_for_symbol = x1[0,time_id]
-                    elif dof_id == 2:
-                        value_for_symbol = x2[0,time_id]
-                    elif dof_id == 3:
-                        value_for_symbol = x3[0,time_id]
-                    elif dof_id == 4:
-                        value_for_symbol = x4[0,time_id]
-                    elif dof_id == 5:
-                        value_for_symbol = x5[0,time_id]
-                    else:
-                        print('ERROR!! < Unknown DOF ID > ')
-                        break
-                elif state_id == 'u':
-                    value_for_symbol = u[0,time_id]
-                else:
-                    print('ERROR!! < Unknown STATE ID > ')
-                    break
-                constraints_eval[n] = constraints_eval[n].subs(set_element, value_for_symbol)
-
-    return constraints_eval
+def sequential_shooting_control(plant_parameters, initial_conditions, set_point, end_time, controller_resolution, num_iter=1):
+    # Only optimize our u terms.
+    print('not ready')
+    # Go through an iteration
 
 
 def unpack_states(states,num_iter):
@@ -517,6 +396,37 @@ def unpack_states(states,num_iter):
             u[0,n]  = states[0,7*(n)+6]
     return x0,x1,x2,x3,x4,x5,u
 
+def eval_expression(expression, states, num_step):
+    (x0,x1,x2,x3,x4,x5,u) = unpack_states(states,num_step)
+    evaluated_expression = sympy.MutableSparseNDimArray(expression)
+    # Now eval the symbolic gradient
+    for n1 in range(evaluated_expression.shape[0]):
+        for n2 in range(evaluated_expression.shape[1]):
+            req_symbols = evaluated_expression[n1,n2].free_symbols
+            if bool(req_symbols):
+                for s in range(len(req_symbols)):
+                    set_element = req_symbols.pop()
+                    symbol = str(set_element)
+                    state_id = symbol[0]
+                    dof_id = int(symbol[1])
+                    time_id = int(symbol[2:])
+                    if state_id == 'x':
+                        if dof_id == 0:
+                            value_for_symbol = x0[0,time_id]
+                        elif dof_id == 1:
+                            value_for_symbol = x1[0,time_id]
+                        elif dof_id == 2:
+                            value_for_symbol = x2[0,time_id]
+                        elif dof_id == 3:
+                            value_for_symbol = x3[0,time_id]
+                        elif dof_id == 4:
+                            value_for_symbol = x4[0,time_id]
+                        elif dof_id == 5:
+                             value_for_symbol = x5[0,time_id]
+                    elif state_id == 'u':
+                        value_for_symbol = u[0,time_id]
+                    evaluated_expression[n1,n2] = evaluated_expression[n1,n2].subs(set_element, value_for_symbol)
+    return np.array(evaluated_expression, dtype=float)
 
 
 def animation_update(i,state_history,l1,l2,line):
