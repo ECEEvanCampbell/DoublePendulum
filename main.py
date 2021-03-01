@@ -147,8 +147,8 @@ class simultaneous_control:
 
     def get_control_law(self, plant_parameters, initial_conditions, set_point, end_time, controller_resolution, num_iter=1, PLOTTING=False):
         self.time_points = int(end_time/controller_resolution)
-        self.num_states = 7*(self.time_points-1)+6
-        self.num_constraints = 6*(self.time_points-1)+8
+        self.num_states = 5*(self.time_points-1)+4
+        self.num_constraints = 4*(self.time_points-1)+8 # update this
 
         self.lambdas = np.ones((1, self.num_constraints))
         self.states = np.zeros((1, self.num_states))
@@ -177,6 +177,7 @@ class simultaneous_control:
         for i in range(num_iter):
             # TODO: If I define lambdas in constraint equations as variables, then these 4 functions can be called outside loop
             # define the constraints of the problem
+            self.states[0,:6] = initial_conditions
             self.get_constraints()
             # define symbolic expression for delL
             self.get_delL()
@@ -205,7 +206,7 @@ class simultaneous_control:
             self.states = self.states + dx
 
             # get state vector and lambdas
-            (x0_history[i,:], x1_history[i,:],x2_history[i,:],x3_history[i,:],_,_,u_history[i,:]) = unpack_states(self.states,self.time_points)
+            (x0_history[i,:], x1_history[i,:],x2_history[i,:],x3_history[i,:],u_history[i,:]) = unpack_states(self.states,self.time_points)
 
         if PLOTTING:
             _, axs = plt.subplots(5,1)
@@ -238,9 +239,9 @@ class simultaneous_control:
             state_sym[1,n] = sympy.symbols('x1'+str(n))
             state_sym[2,n] = sympy.symbols('x2'+str(n))
             state_sym[3,n] = sympy.symbols('x3'+str(n))
-            state_sym[4,n] = sympy.symbols('x4'+str(n))
-            state_sym[5,n] = sympy.symbols('x5'+str(n))
-            state_sym[6,n] = sympy.symbols('u1'+str(n))
+            #state_sym[4,n] = sympy.symbols('x4'+str(n))
+            #state_sym[5,n] = sympy.symbols('x5'+str(n))
+            state_sym[4,n] = sympy.symbols('u1'+str(n))
         self.state_sym = state_sym
 
     def get_constraints(self):
@@ -250,29 +251,49 @@ class simultaneous_control:
         for n in range(1,self.time_points):
             # Each of these get a lambda in front of them.
             # x0n
-            constraints.append(self.lambdas[0,6*(n-1)+0] * (self.state_sym[0,n]-self.state_sym[0,n-1]- self.state_sym[2,n-1]*self.controller_resolution))
+            constraints.append(self.lambdas[0,4*(n-1)+0] * (self.state_sym[0,n]-self.state_sym[0,n-1]- self.state_sym[2,n-1]*self.controller_resolution))
             # x1n
-            constraints.append(self.lambdas[0,6*(n-1)+1] * (self.state_sym[1,n]-self.state_sym[1,n-1]- self.state_sym[3,n-1]*self.controller_resolution))
+            constraints.append(self.lambdas[0,4*(n-1)+1] * (self.state_sym[1,n]-self.state_sym[1,n-1]- self.state_sym[3,n-1]*self.controller_resolution))
             # x2n
-            constraints.append(self.lambdas[0,6*(n-1)+2] * (self.state_sym[2,n]-self.state_sym[2,n-1]- self.state_sym[4,n-1]*self.controller_resolution))
+            #constraints.append(self.lambdas[0,6*(n-1)+2] * (self.state_sym[2,n]-self.state_sym[2,n-1]- self.state_sym[4,n-1]*self.controller_resolution))
+            n_a = -1*m2*l1*self.state_sym[2,n-1] * sympy.sin(self.state_sym[0,n-1]-self.state_sym[1,n-1])
+            n_b = m2*g*sympy.sin(self.state_sym[1,n-1])
+            n_1 = (n_a + n_b) * sympy.cos(self.state_sym[0,n-1]-self.state_sym[1,n-1])
+            n_2 = -1*m2*l2*self.state_sym[3,n-1]**2*sympy.sin(self.state_sym[0,n-1]-self.state_sym[1,n-1])
+            n_3 = -1*(m1+m2)*g*sympy.sin(self.state_sym[0,n-1])
+            d_1 = (m1+m2)*l1
+            d_2 = -m2*l1*sympy.cos(self.state_sym[0,n-1]-self.state_sym[1,n-1])**2
+            alpha_1 = (n_1+n_2+n_3)/(d_1+d_2) + self.state_sym[4,n-1]
+            constraints.append(self.lambdas[0,4*(n-1)+2] * (self.state_sym[2,n]-self.state_sym[2,n-1]- (alpha_1)* self.controller_resolution))
             # x3n
-            constraints.append(self.lambdas[0,6*(n-1)+3] * (self.state_sym[3,n]-self.state_sym[3,n-1]- self.state_sym[5,n-1]*self.controller_resolution))
+            #constraints.append(self.lambdas[0,4*(n-1)+3] * (self.state_sym[3,n]-self.state_sym[3,n-1]- self.state_sym[5,n-1]*self.controller_resolution))
+            n_a = m2*l2*self.state_sym[3,n-1]**2 * sympy.sin(self.state_sym[0,n-1]-self.state_sym[1,n-1])
+            n_b = -(m1+m2)*g*sympy.sin(self.state_sym[0,n-1])
+            n_c = (m1+m2)*l1
+            n_1 = -m2*l1*l2 *(n_a + n_b)/n_c * sympy.cos(self.state_sym[0,n-1]-self.state_sym[1,n-1])
+            n_2 = m2*l1*l2*self.state_sym[2,n-1]*sympy.sin(self.state_sym[0,n-1]-self.state_sym[1,n-1])
+            n_3 = -1*m2*g*l2*sympy.sin(self.state_sym[1,n-1])
+            d_1 = m2*l2**2
+            d_2 = m2**2*l1*l2**2*sympy.cos(self.state_sym[0,n-1]-self.state_sym[1,n-1])**2/n_c
+            alpha_2 = (n_1+n_2+n_3)/(d_1+d_2)
+            constraints.append(self.lambdas[0,4*(n-1)+3] * (self.state_sym[3,n]-self.state_sym[3,n-1]- (alpha_2) * self.controller_resolution))
+
             # x4n
-            constraints.append(self.lambdas[0,6*(n-1)+4] * (self.state_sym[4,n] + m2*l2/((m1+m2)*l1)*self.state_sym[5,n-1] * sympy.cos(self.state_sym[0,n-1]-self.state_sym[1,n-1])   + m2*l2/((m1+m2)*l1)*self.state_sym[3,n-1]**2 *sympy.sin(self.state_sym[0,n-1]-self.state_sym[1,n-1]) +g/l1*sympy.sin(self.state_sym[0,n-1]) -self.state_sym[6,n-1]  )   )
+            #constraints.append(self.lambdas[0,6*(n-1)+4] * (self.state_sym[4,n] + m2*l2/((m1+m2)*l1)*self.state_sym[5,n-1] * sympy.cos(self.state_sym[0,n-1]-self.state_sym[1,n-1])   + m2*l2/((m1+m2)*l1)*self.state_sym[3,n-1]**2 *sympy.sin(self.state_sym[0,n-1]-self.state_sym[1,n-1]) +g/l1*sympy.sin(self.state_sym[0,n-1]) -self.state_sym[6,n-1]  )   )
             # x5n
-            constraints.append(self.lambdas[0,6*(n-1)+5] * (self.state_sym[5,n] -l1/l2*self.state_sym[2,n-1]**2 * sympy.sin(self.state_sym[0,n-1]-self.state_sym[1,n-1])     +g/l2*sympy.sin(self.state_sym[1,n-1])  +l1/l2*self.state_sym[4,n-1]*sympy.cos(self.state_sym[0,n-1]-self.state_sym[1,n-1])  )  )
+            #constraints.append(self.lambdas[0,6*(n-1)+5] * (self.state_sym[5,n] -l1/l2*self.state_sym[2,n-1]**2 * sympy.sin(self.state_sym[0,n-1]-self.state_sym[1,n-1])     +g/l2*sympy.sin(self.state_sym[1,n-1])  +l1/l2*self.state_sym[4,n-1]*sympy.cos(self.state_sym[0,n-1]-self.state_sym[1,n-1])  )  )
         # Initial conditions boundary
-        constraints.append(self.lambdas[0,6*(n)+0]  *  (self.state_sym[0,0] - self.initial_conditions[0])**2 )
-        constraints.append(self.lambdas[0,6*(n)+1]  *  (self.state_sym[1,0] - self.initial_conditions[1])**2 )
-        constraints.append(self.lambdas[0,6*(n)+2]  *  (self.state_sym[2,0] - self.initial_conditions[2])**2 )
-        constraints.append(self.lambdas[0,6*(n)+3]  *  (self.state_sym[3,0] - self.initial_conditions[3])**2 )
-        constraints.append(self.lambdas[0,6*(n)+4]  *  (self.state_sym[4,0] - self.initial_conditions[4])**2 )
-        constraints.append(self.lambdas[0,6*(n)+5]  *  (self.state_sym[5,0] - self.initial_conditions[5])**2 )
+        constraints.append(self.lambdas[0,4*(n)+0]  *  (self.state_sym[0,0] - self.initial_conditions[0])**2 )
+        constraints.append(self.lambdas[0,4*(n)+1]  *  (self.state_sym[1,0] - self.initial_conditions[1])**2 )
+        constraints.append(self.lambdas[0,4*(n)+2]  *  (self.state_sym[2,0] - self.initial_conditions[2])**2 )
+        constraints.append(self.lambdas[0,4*(n)+3]  *  (self.state_sym[3,0] - self.initial_conditions[3])**2 )
+        #constraints.append(self.lambdas[0,6*(n)+4]  *  (self.state_sym[4,0] - self.initial_conditions[4])**2 )
+        #constraints.append(self.lambdas[0,6*(n)+5]  *  (self.state_sym[5,0] - self.initial_conditions[5])**2 )
         # End condition boundary
-        constraints.append(self.lambdas[0,6*(n)+6]  *   (self.state_sym[0,self.time_points-1] - self.set_point[0])**2 )
-        constraints.append(self.lambdas[0,6*(n)+7]  *   (self.state_sym[1,self.time_points-1] - self.set_point[1])**2 )
-        #constraints.append(self.lambdas[0,6*(n)+8]  *   (self.state_sym[2,self.time_points-1] - self.set_point[2])**2 )
-        #constraints.append(self.lambdas[0,6*(n)+9]  *   (self.state_sym[3,self.time_points-1] - self.set_point[3])**2 )
+        constraints.append(self.lambdas[0,4*(n)+4]  *   (self.state_sym[0,self.time_points-1] - self.set_point[0])**2 )
+        constraints.append(self.lambdas[0,4*(n)+5]  *   (self.state_sym[1,self.time_points-1] - self.set_point[1])**2 )
+        constraints.append(self.lambdas[0,4*(n)+6]  *   (self.state_sym[2,self.time_points-1] - self.set_point[2])**2 )
+        constraints.append(self.lambdas[0,4*(n)+7]  *   (self.state_sym[3,self.time_points-1] - self.set_point[3])**2 )
         #constraints.append(self.lambdas[0,6*(n)+10] *   (self.state_sym[4,self.time_points-1] - self.set_point[4])**2 )
         #constraints.append(self.lambdas[0,6*(n)+11] *   (self.state_sym[5,self.time_points-1] - self.set_point[5])**2 )
 
@@ -290,8 +311,8 @@ class simultaneous_control:
             #costs.append((self.state_sym[4,n]-self.set_point[4])**2) 
             #costs.append((self.state_sym[5,n]-self.set_point[5])**2)
             # minimize the control signal at each time set
-            #if n != self.time_points:
-            #    costs.append(self.state_sym[6,n]**2) 
+            if n != self.time_points:
+                costs.append(self.state_sym[4,n]**2) 
             
         costs = MutableSparseNDimArray(costs, (len(costs),1) )
         self.costs = costs
@@ -302,27 +323,27 @@ class simultaneous_control:
             # Gradient from constraints
             for c in range(self.constraints.shape[0]):
                 # states PDE
-                del_L[7*n+0,0] = del_L[7*n+0,0] + sympy.diff(self.constraints[c,0],self.state_sym[0,n])
-                del_L[7*n+1,0] = del_L[7*n+1,0] + sympy.diff(self.constraints[c,0],self.state_sym[1,n])
-                del_L[7*n+2,0] = del_L[7*n+2,0] + sympy.diff(self.constraints[c,0],self.state_sym[2,n])
-                del_L[7*n+3,0] = del_L[7*n+3,0] + sympy.diff(self.constraints[c,0],self.state_sym[3,n])
-                del_L[7*n+4,0] = del_L[7*n+4,0] + sympy.diff(self.constraints[c,0],self.state_sym[4,n])
-                del_L[7*n+5,0] = del_L[7*n+5,0] + sympy.diff(self.constraints[c,0],self.state_sym[5,n])
+                del_L[5*n+0,0] = del_L[5*n+0,0] + sympy.diff(self.constraints[c,0],self.state_sym[0,n])
+                del_L[5*n+1,0] = del_L[5*n+1,0] + sympy.diff(self.constraints[c,0],self.state_sym[1,n])
+                del_L[5*n+2,0] = del_L[5*n+2,0] + sympy.diff(self.constraints[c,0],self.state_sym[2,n])
+                del_L[5*n+3,0] = del_L[5*n+3,0] + sympy.diff(self.constraints[c,0],self.state_sym[3,n])
+                #del_L[7*n+4,0] = del_L[7*n+4,0] + sympy.diff(self.constraints[c,0],self.state_sym[4,n])
+                #del_L[7*n+5,0] = del_L[7*n+5,0] + sympy.diff(self.constraints[c,0],self.state_sym[5,n])
                 if n != self.time_points-1:
                     # control signal PDE
-                    del_L[7*n+6,0] = del_L[7*n+6,0] + sympy.diff(self.constraints[c,0],self.state_sym[6,n])
+                    del_L[5*n+4,0] = del_L[5*n+4,0] + sympy.diff(self.constraints[c,0],self.state_sym[4,n])
             # Gradient from costs
             for c in range(self.costs.shape[0]):
                 # states PDE
-                del_L[7*n+0,0] = del_L[7*n+0,0] + sympy.diff(self.costs[c,0],self.state_sym[0,n])
-                del_L[7*n+1,0] = del_L[7*n+1,0] + sympy.diff(self.costs[c,0],self.state_sym[1,n])
-                del_L[7*n+2,0] = del_L[7*n+2,0] + sympy.diff(self.costs[c,0],self.state_sym[2,n])
-                del_L[7*n+3,0] = del_L[7*n+3,0] + sympy.diff(self.costs[c,0],self.state_sym[3,n])
-                del_L[7*n+4,0] = del_L[7*n+4,0] + sympy.diff(self.costs[c,0],self.state_sym[4,n])
-                del_L[7*n+5,0] = del_L[7*n+5,0] + sympy.diff(self.costs[c,0],self.state_sym[5,n])
+                del_L[5*n+0,0] = del_L[5*n+0,0] + sympy.diff(self.costs[c,0],self.state_sym[0,n])
+                del_L[5*n+1,0] = del_L[5*n+1,0] + sympy.diff(self.costs[c,0],self.state_sym[1,n])
+                del_L[5*n+2,0] = del_L[5*n+2,0] + sympy.diff(self.costs[c,0],self.state_sym[2,n])
+                del_L[5*n+3,0] = del_L[5*n+3,0] + sympy.diff(self.costs[c,0],self.state_sym[3,n])
+                #del_L[7*n+4,0] = del_L[7*n+4,0] + sympy.diff(self.costs[c,0],self.state_sym[4,n])
+                #del_L[7*n+5,0] = del_L[7*n+5,0] + sympy.diff(self.costs[c,0],self.state_sym[5,n])
                 if n != self.time_points-1:
                     # control signal PDE
-                    del_L[7*n+6,0] = del_L[7*n+6,0] + sympy.diff(self.costs[c,0],self.state_sym[6,n])
+                    del_L[5*n+4,0] = del_L[5*n+4,0] + sympy.diff(self.costs[c,0],self.state_sym[4,n])
         self.del_L = del_L
 
     def get_delF(self):
@@ -331,43 +352,43 @@ class simultaneous_control:
             # Gradient from costs
             for c in range(self.costs.shape[0]):
                 # states PDE
-                del_F[7*n+0,0] = del_F[7*n+0,0] + sympy.diff(self.costs[c,0],self.state_sym[0,n])
-                del_F[7*n+1,0] = del_F[7*n+1,0] + sympy.diff(self.costs[c,0],self.state_sym[1,n])
-                del_F[7*n+2,0] = del_F[7*n+2,0] + sympy.diff(self.costs[c,0],self.state_sym[2,n])
-                del_F[7*n+3,0] = del_F[7*n+3,0] + sympy.diff(self.costs[c,0],self.state_sym[3,n])
-                del_F[7*n+4,0] = del_F[7*n+4,0] + sympy.diff(self.costs[c,0],self.state_sym[4,n])
-                del_F[7*n+5,0] = del_F[7*n+5,0] + sympy.diff(self.costs[c,0],self.state_sym[5,n])
+                del_F[5*n+0,0] = del_F[5*n+0,0] + sympy.diff(self.costs[c,0],self.state_sym[0,n])
+                del_F[5*n+1,0] = del_F[5*n+1,0] + sympy.diff(self.costs[c,0],self.state_sym[1,n])
+                del_F[5*n+2,0] = del_F[5*n+2,0] + sympy.diff(self.costs[c,0],self.state_sym[2,n])
+                del_F[5*n+3,0] = del_F[5*n+3,0] + sympy.diff(self.costs[c,0],self.state_sym[3,n])
+                #del_F[5*n+4,0] = del_F[7*n+4,0] + sympy.diff(self.costs[c,0],self.state_sym[4,n])
+                #del_F[5*n+5,0] = del_F[7*n+5,0] + sympy.diff(self.costs[c,0],self.state_sym[5,n])
                 if n != self.time_points-1:
                     # control signal PDE
-                    del_F[7*n+6,0] = del_F[7*n+6,0] + sympy.diff(self.costs[c,0],self.state_sym[6,n])
+                    del_F[5*n+4,0] = del_F[5*n+4,0] + sympy.diff(self.costs[c,0],self.state_sym[4,n])
         self.del_F = del_F
         
     def get_G(self):
         G = sympy.zeros(self.num_constraints, self.num_states)
         for n in range(self.time_points):
             for c in range(self.constraints.shape[0]):
-                G[c,7*n]   = sympy.diff(self.constraints[c,0], self.state_sym[0,n])
-                G[c,7*n+1] = sympy.diff(self.constraints[c,0], self.state_sym[1,n])
-                G[c,7*n+2] = sympy.diff(self.constraints[c,0], self.state_sym[2,n])
-                G[c,7*n+3] = sympy.diff(self.constraints[c,0], self.state_sym[3,n])
-                G[c,7*n+4] = sympy.diff(self.constraints[c,0], self.state_sym[4,n])
-                G[c,7*n+5] = sympy.diff(self.constraints[c,0], self.state_sym[5,n])
+                G[c,5*n]   = sympy.diff(self.constraints[c,0], self.state_sym[0,n])
+                G[c,5*n+1] = sympy.diff(self.constraints[c,0], self.state_sym[1,n])
+                G[c,5*n+2] = sympy.diff(self.constraints[c,0], self.state_sym[2,n])
+                G[c,5*n+3] = sympy.diff(self.constraints[c,0], self.state_sym[3,n])
+                #G[c,5*n+4] = sympy.diff(self.constraints[c,0], self.state_sym[4,n])
+                #G[c,5*n+5] = sympy.diff(self.constraints[c,0], self.state_sym[5,n])
                 if n != self.time_points-1:
-                    G[c,7*+6] = sympy.diff(self.constraints[c,0], self.state_sym[6,n])
+                    G[c,5*+4] = sympy.diff(self.constraints[c,0], self.state_sym[4,n])
         self.G = G
 
     def get_Hl(self):
         Hl = sympy.zeros(self.num_states, self.num_states)
         for l in range(self.del_L.shape[0]):
             for n in range(self.time_points):
-                Hl[l,7*n]   = sympy.diff(self.del_F[l,0], self.state_sym[0,n])
-                Hl[l,7*n+1] = sympy.diff(self.del_F[l,0], self.state_sym[1,n])
-                Hl[l,7*n+2] = sympy.diff(self.del_F[l,0], self.state_sym[2,n])
-                Hl[l,7*n+3] = sympy.diff(self.del_F[l,0], self.state_sym[3,n])
-                Hl[l,7*n+4] = sympy.diff(self.del_F[l,0], self.state_sym[4,n])
-                Hl[l,7*n+5] = sympy.diff(self.del_F[l,0], self.state_sym[5,n])
+                Hl[l,5*n]   = sympy.diff(self.del_F[l,0], self.state_sym[0,n])
+                Hl[l,5*n+1] = sympy.diff(self.del_F[l,0], self.state_sym[1,n])
+                Hl[l,5*n+2] = sympy.diff(self.del_F[l,0], self.state_sym[2,n])
+                Hl[l,5*n+3] = sympy.diff(self.del_F[l,0], self.state_sym[3,n])
+                #Hl[l,7*n+4] = sympy.diff(self.del_F[l,0], self.state_sym[4,n])
+                #Hl[l,7*n+5] = sympy.diff(self.del_F[l,0], self.state_sym[5,n])
                 if n!= self.time_points-1:
-                    Hl[l,7*n+6] = sympy.diff(self.del_F[l,0], self.state_sym[6,n])
+                    Hl[l,5*n+4] = sympy.diff(self.del_F[l,0], self.state_sym[4,n])
         self.Hl = Hl
 
 
@@ -382,22 +403,22 @@ def unpack_states(states,num_iter):
     x1 = np.zeros((1,num_iter))
     x2 = np.zeros((1,num_iter))
     x3 = np.zeros((1,num_iter))
-    x4 = np.zeros((1,num_iter))
-    x5 = np.zeros((1,num_iter))
+    #x4 = np.zeros((1,num_iter))
+    #x5 = np.zeros((1,num_iter))
     u  = np.zeros((1,num_iter-1))
     for n in range(num_iter):
-        x0[0,n] = states[0,7*(n)]
-        x1[0,n] = states[0,7*(n)+1]
-        x2[0,n] = states[0,7*(n)+2]
-        x3[0,n] = states[0,7*(n)+3]
-        x4[0,n] = states[0,7*(n)+4]
-        x5[0,n] = states[0,7*(n)+5]
+        x0[0,n] = states[0,5*(n)]
+        x1[0,n] = states[0,5*(n)+1]
+        x2[0,n] = states[0,5*(n)+2]
+        x3[0,n] = states[0,5*(n)+3]
+        #x4[0,n] = states[0,5*(n)+4]
+        #x5[0,n] = states[0,5*(n)+5]
         if n != num_iter-1:
-            u[0,n]  = states[0,7*(n)+6]
-    return x0,x1,x2,x3,x4,x5,u
+            u[0,n]  = states[0,5*(n)+4]
+    return x0,x1,x2,x3,u
 
 def eval_expression(expression, states, num_step):
-    (x0,x1,x2,x3,x4,x5,u) = unpack_states(states,num_step)
+    (x0,x1,x2,x3,u) = unpack_states(states,num_step)
     evaluated_expression = sympy.MutableSparseNDimArray(expression)
     # Now eval the symbolic gradient
     for n1 in range(evaluated_expression.shape[0]):
