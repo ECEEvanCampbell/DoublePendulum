@@ -56,7 +56,7 @@ def main():
         control_end_time = 2 # seconds
         controller = simultaneous_control()
 
-        control_sequence = controller.get_control_law(plant_parameters, state_history[:,0], set_point, control_end_time, controller_resolution,4,True)
+        control_sequence = controller.get_control_law(plant_parameters, state_history[:,0], set_point, control_end_time, controller_resolution,10,True)
         # Run simultaneous control to get control signal array
     elif controller_type == 'PID':
         print('not coded yet!')
@@ -113,8 +113,28 @@ def plant_update(states, control_signal, plant_parameters):
     alpha1 = states[4]
     alpha2 = states[5]
 
-    dd_theta1 = -1*(m2*l2*alpha2*math.cos(theta1-theta2) + m2*l2*omega2*omega2*math.sin(theta1-theta2) + (m1+m2)*g*math.sin(theta1))/((m1+m2)*l1) + control_signal
-    dd_theta2 = (m2*l1*omega1*omega1*math.sin(theta1-theta2)-m2*g*math.sin(theta2)-m2*l1*alpha1*math.cos(theta1-theta2))/(m2*l2)
+    n1 = -1*m2*l1*omega1*math.sin(theta1-theta2)-m2*g*math.sin(theta2) * math.cos(theta1-theta2)
+    n2 = -1*m2*l2*omega2**2 * math.sin(theta1-theta2)
+    n3 = -1*(m1+m2)*g*math.sin(theta1)
+    d1 = (m1+m2)*l2
+    d2 = -m2*l1*(math.cos(theta1-theta2))**2
+    dd_theta1 = (n1+n2+n3)/(d1+d2) + control_signal
+
+    n_1a = -m2*l1*l2
+    n_1b = m2*l2*omega2**2*math.sin(theta1-theta2)
+    n_1c = -1*(m1+m2)*g*math.sin(theta1)
+    n_1d = (m1+m2)*l1
+    n_1e = math.cos(theta1-theta2)
+    n_1 = n_1a*(n_1b + n_1c)/n_1d * n_1e
+    n_2 = m2*l1*l2*omega1*math.sin(theta1-theta2)
+    n_3 = -1*m2*g*l2*math.sin(theta2)
+    d_1 = m2*l2**2
+    d_2 = -1*m2**2*l1*l2**2*math.cos(theta1-theta2)**2 / n_1d
+    dd_theta2 = (n_1 + n_2 + n_3)/(d_1+d_2)
+
+    #dd_theta1 = -1*(m2*l2*alpha2*math.cos(theta1-theta2) + m2*l2*omega2*omega2*math.sin(theta1-theta2) + (m1+m2)*g*math.sin(theta1))/((m1+m2)*l1) + control_signal
+    #dd_theta2 = (m2*l1*omega1*omega1*math.sin(theta1-theta2)-m2*g*math.sin(theta2)-m2*l1*alpha1*math.cos(theta1-theta2))/(m2*l2)
+
 
     return dd_theta1, dd_theta2
 
@@ -146,13 +166,16 @@ class simultaneous_control:
         self.control_type = 'simultaneous'
 
     def get_control_law(self, plant_parameters, initial_conditions, set_point, end_time, controller_resolution, num_iter=1, PLOTTING=False):
+        
+        self.lr = 0.1
+
         self.time_points = int(end_time/controller_resolution)
         self.num_states = 5*(self.time_points-1)+4
-        self.num_constraints = 4*(self.time_points-1)+8 # update this
+        self.num_constraints = 4*(self.time_points-1)+8
 
         self.lambdas = np.ones((1, self.num_constraints))
         self.states = np.zeros((1, self.num_states))
-        self.states[0,:6] = initial_conditions
+        #self.states[0,:4] = initial_conditions
     
         self.set_point = set_point
         self.initial_conditions = initial_conditions
@@ -166,18 +189,18 @@ class simultaneous_control:
         self.get_costs()
         # define symbolic expression for delF
         self.get_delF()
+        sum_costs = 100
         
         if PLOTTING:
-            x0_history = np.zeros((num_iter, self.time_points))
-            x1_history = np.zeros((num_iter, self.time_points))
-            x2_history = np.zeros((num_iter, self.time_points))
-            x3_history = np.zeros((num_iter, self.time_points))
-            u_history  = np.zeros((num_iter, self.time_points-1))
+            x0_history = np.empty((num_iter, self.time_points))
+            x1_history = np.empty((num_iter, self.time_points))
+            x2_history = np.empty((num_iter, self.time_points))
+            x3_history = np.empty((num_iter, self.time_points))
+            u_history  = np.empty((num_iter, self.time_points-1))
 
         for i in range(num_iter):
-            # TODO: If I define lambdas in constraint equations as variables, then these 4 functions can be called outside loop
             # define the constraints of the problem
-            self.states[0,:6] = initial_conditions
+            self.states[0,:4] = initial_conditions[:4]
             self.get_constraints()
             # define symbolic expression for delL
             self.get_delL()
@@ -186,6 +209,7 @@ class simultaneous_control:
             # define symbolic expression for Hl
             self.get_Hl()
 
+            costs       = eval_expression(self.costs,       self.states, self.time_points)
             constraints = eval_expression(self.constraints, self.states, self.time_points)
             #del_L       = eval_expression(self.del_L,       self.states, self.time_points)
             del_F       = eval_expression(self.del_F,       self.states, self.time_points)
@@ -203,10 +227,18 @@ class simultaneous_control:
             #dlambdas = delta[self.num_states:,0]
 
             self.lambdas = delta[self.num_states:,0].reshape([1,-1])
-            self.states = self.states + dx
+            self.states = self.states + self.lr * dx
+
 
             # get state vector and lambdas
             (x0_history[i,:], x1_history[i,:],x2_history[i,:],x3_history[i,:],u_history[i,:]) = unpack_states(self.states,self.time_points)
+
+            # Check exit condition
+            sum_costs = np.sum(np.abs(costs))
+            print(f"{i}: {sum_costs}")
+            if sum_costs < 1:
+                break
+            
 
         if PLOTTING:
             _, axs = plt.subplots(5,1)
@@ -274,7 +306,7 @@ class simultaneous_control:
             n_2 = m2*l1*l2*self.state_sym[2,n-1]*sympy.sin(self.state_sym[0,n-1]-self.state_sym[1,n-1])
             n_3 = -1*m2*g*l2*sympy.sin(self.state_sym[1,n-1])
             d_1 = m2*l2**2
-            d_2 = m2**2*l1*l2**2*sympy.cos(self.state_sym[0,n-1]-self.state_sym[1,n-1])**2/n_c
+            d_2 = -1*m2**2*l1*l2**2*sympy.cos(self.state_sym[0,n-1]-self.state_sym[1,n-1])**2/n_c
             alpha_2 = (n_1+n_2+n_3)/(d_1+d_2)
             constraints.append(self.lambdas[0,4*(n-1)+3] * (self.state_sym[3,n]-self.state_sym[3,n-1]- (alpha_2) * self.controller_resolution))
 
@@ -302,7 +334,7 @@ class simultaneous_control:
 
     def get_costs(self):
         costs = []
-        for n in range(self.time_points):
+        for n in range(1,self.time_points-1):
             # minimize error at each time step
             costs.append((self.state_sym[0,n]-self.set_point[0])**2)
             costs.append((self.state_sym[1,n]-self.set_point[1])**2)
@@ -312,8 +344,8 @@ class simultaneous_control:
             #costs.append((self.state_sym[5,n]-self.set_point[5])**2)
             # minimize the control signal at each time set
             if n != self.time_points:
-                costs.append(self.state_sym[4,n]**2) 
-            
+                costs.append(self.state_sym[4,n]**2)            
+                 
         costs = MutableSparseNDimArray(costs, (len(costs),1) )
         self.costs = costs
 
@@ -447,7 +479,7 @@ def eval_expression(expression, states, num_step):
                     elif state_id == 'u':
                         value_for_symbol = u[0,time_id]
                     evaluated_expression[n1,n2] = evaluated_expression[n1,n2].subs(set_element, value_for_symbol)
-    return np.array(evaluated_expression, dtype=float)
+    return np.array(evaluated_expression.tolist(), dtype=float)
 
 
 def animation_update(i,state_history,l1,l2,line):
