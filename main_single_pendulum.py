@@ -46,16 +46,18 @@ def main():
     set_point = np.asarray([math.pi,0])
 
     # CONTROLLER SETUP
-    controller_type = 'simultaneous_control'#'none'#
+    controller_type = 'shooting_control'#'none'#
     
     if controller_type == 'simultaneous_control':
-        print('in progress!')
         controller_resolution = 0.1 # seconds
         control_end_time = 2 # seconds
         controller = simultaneous_control()
-
         control_sequence = controller.get_control_law(plant_parameters, state_history[:,0], set_point, control_end_time, controller_resolution,3,True)
-        # Run simultaneous control to get control signal array
+    elif controller_type == "shooting_control":
+        controller_resolution = 0.1 # seconds
+        control_end_time = 2 # seconds
+        controller = shooting_control()
+        control_sequence = controller.get_control_law(plant_parameters, state_history[:,0], set_point, control_end_time, controller_resolution,3,True)
     elif controller_type == 'PID':
         print('not coded yet!')
         # Set Point
@@ -299,6 +301,188 @@ class simultaneous_control:
                 G[c,3*n+1] = sympy.diff(self.constraints[c,0], self.state_sym[1,n])
                 if n != self.time_points-1:
                     G[c,3*+2] = sympy.diff(self.constraints[c,0], self.state_sym[2,n])
+        self.G = G
+
+    def get_Hl(self):
+        Hl = sympy.zeros(self.num_states, self.num_states)
+        for l in range(self.del_L.shape[0]):
+            for n in range(self.time_points):
+                Hl[l,3*n]   = sympy.diff(self.del_F[l,0], self.state_sym[0,n])
+                Hl[l,3*n+1] = sympy.diff(self.del_F[l,0], self.state_sym[1,n])
+                if n!= self.time_points-1:
+                    Hl[l,3*n+2] = sympy.diff(self.del_F[l,0], self.state_sym[2,n])
+        self.Hl = Hl
+
+
+class shooting_control:
+    def __init__(self):
+        self.control_type = 'shooting'
+
+    def get_control_law(self, plant_parameters, initial_conditions, set_point, end_time, controller_resolution, num_iter=1, PLOTTING=False):
+        self.time_points = int(end_time/controller_resolution)
+        self.num_states = 3*(self.time_points-1)+2
+        self.num_constraints = 2*(self.time_points-1)+4
+
+        self.lambdas = np.ones((1, self.num_constraints))
+        self.states = np.zeros((1, self.num_states))
+        #self.states[0,:4] = initial_conditions
+    
+        self.set_point = set_point
+        self.initial_conditions = initial_conditions
+        self.controller_resolution = controller_resolution
+
+        # store the plant parameters given to the controller
+        self.plant_parameters = plant_parameters
+        # prepare the variables for symbolic math
+        self.get_state_sym()
+        # define the costs of the problem
+        self.get_costs()
+        # define symbolic expression for delF
+        self.get_delF()
+        
+        if PLOTTING:
+            x0_history = np.zeros((num_iter, self.time_points))
+            x1_history = np.zeros((num_iter, self.time_points))
+            u_history  = np.zeros((num_iter, self.time_points-1))
+
+        for i in range(num_iter):
+            # define the constraints of the problem
+            self.states[0,:2] = initial_conditions[:2]
+            
+            self.get_constraints()
+            # define symbolic expression for delL
+            self.get_delL()
+            # define symbolic expression for G
+            self.get_G()
+            # define symbolic expression for Hl
+            self.get_Hl()
+
+            constraints = eval_expression(self.constraints, self.states, self.time_points)
+            del_L       = eval_expression(self.del_L,       self.states, self.time_points)
+            del_F       = eval_expression(self.del_F,       self.states, self.time_points)
+            G           = eval_expression(self.G,           self.states, self.time_points)
+            Hl          = eval_expression(self.Hl,          self.states, self.time_points)
+            
+            KKT_top = np.concatenate(  (Hl,np.transpose(G)), axis=1)
+            KKT_bot = np.concatenate(  (G, np.zeros((G.shape[0], KKT_top.shape[1] - G.shape[1])))  , axis=1   )
+            KKT = np.concatenate(  (KKT_top, KKT_bot),  axis=0  )
+
+            perform_expression = np.concatenate(   ( del_F, constraints ), axis=0)
+
+            delta = np.dot( np.linalg.pinv(KKT), perform_expression)
+            dx = delta[:self.num_states , 0]
+            #dlambdas = delta[self.num_states:,0]
+
+            self.lambdas = -1 * delta[self.num_states:,0].reshape([1,-1])
+            self.states = self.states - dx
+
+            # get state vector and lambdas
+            (x0_history[i,:], x1_history[i,:],u_history[i,:]) = unpack_states(self.states,self.time_points)
+
+        if PLOTTING:
+            _, axs = plt.subplots(3,1)
+            for i in range(num_iter):
+                axs[0].plot(np.linspace(0,end_time, int(end_time/controller_resolution)), x0_history[i,:])
+                axs[0].set_title('Theta 1')
+
+                axs[1].plot(np.linspace(0,end_time, int(end_time/controller_resolution)), x1_history[i,:])
+                axs[1].set_title('DTheta 1')
+
+                axs[2].plot(np.linspace(0,end_time-controller_resolution, int(end_time/controller_resolution)-1), u_history[i,:])
+                axs[2].set_title('U')
+            for ax in axs.flat:
+                ax.set(xlabel='Time', ylabel='Value')
+            plt.show()
+        
+        control_sequence = u_history[-1,:]
+        return control_sequence
+
+    def get_state_sym(self):
+        state_sym = {}
+        for n in range(self.time_points):
+            state_sym[0,n] = sympy.symbols('x0'+str(n))
+            state_sym[1,n] = sympy.symbols('x1'+str(n))
+            state_sym[2,n] = sympy.symbols('u1'+str(n))
+        self.state_sym = state_sym
+
+    def get_constraints(self):
+        (m1,l1,g) = self.plant_parameters
+        constraints = []
+        # Dynamics based constraints
+        for n in range(1,self.time_points):
+            # Each of these get a lambda in front of them.
+            # x0n
+            constraints.append(self.lambdas[0,2*(n-1)+0] * (self.state_sym[0,n]-self.state_sym[0,n-1]- self.state_sym[1,n-1]*self.controller_resolution))
+            # x1n
+            constraints.append(self.lambdas[0,2*(n-1)+1] * (self.state_sym[1,n]-self.state_sym[1,n-1]- (g/l1*sympy.sin(self.state_sym[0,n-1]) + self.state_sym[2,n-1])*self.controller_resolution))
+            
+        # Initial conditions boundary
+        constraints.append(self.lambdas[0,2*(n)+0]  *  (self.state_sym[0,0] - self.initial_conditions[0])**2 )
+        constraints.append(self.lambdas[0,2*(n)+1]  *  (self.state_sym[1,0] - self.initial_conditions[1])**2 )
+        # End condition boundary
+        constraints.append(self.lambdas[0,2*(n)+2]  *   (self.state_sym[0,self.time_points-1] - self.set_point[0])**2 )
+        constraints.append(self.lambdas[0,2*(n)+3]  *   (self.state_sym[1,self.time_points-1] - self.set_point[1])**2 )
+
+        constraints = MutableSparseNDimArray(constraints, (len(constraints),1))
+        self.constraints = constraints
+
+    def get_costs(self):
+        costs = []
+        for n in range(1,self.time_points-1):
+            # minimize error at each time step
+            costs.append((self.state_sym[0,n]-self.set_point[0])**2)
+            costs.append((self.state_sym[1,n]-self.set_point[1])**2)
+            # minimize the control signal at each time set
+            if n != self.time_points:
+                costs.append(self.state_sym[2,n]**2)            
+                 
+        costs = MutableSparseNDimArray(costs, (len(costs),1) )
+        self.costs = costs
+
+    def get_delL(self):
+        del_L = sympy.zeros(self.num_states,1)
+        for n in range(self.time_points):
+            # Gradient from constraints
+            for c in range(self.constraints.shape[0]):
+                # states PDE
+                del_L[3*n+0,0] = del_L[3*n+0,0] + sympy.diff(self.constraints[c,0],self.state_sym[0,n])
+                del_L[3*n+1,0] = del_L[3*n+1,0] + sympy.diff(self.constraints[c,0],self.state_sym[1,n])
+                if n != self.time_points-1:
+                    # control signal PDE
+                    del_L[3*n+2,0] = del_L[3*n+2,0] + sympy.diff(self.constraints[c,0],self.state_sym[2,n])
+            # Gradient from costs
+            for c in range(self.costs.shape[0]):
+                # states PDE
+                del_L[3*n+0,0] = del_L[3*n+0,0] + sympy.diff(self.costs[c,0],self.state_sym[0,n])
+                del_L[3*n+1,0] = del_L[3*n+1,0] + sympy.diff(self.costs[c,0],self.state_sym[1,n])
+                if n != self.time_points-1:
+                    # control signal PDE
+                    del_L[3*n+2,0] = del_L[3*n+2,0] + sympy.diff(self.costs[c,0],self.state_sym[2,n])
+        self.del_L = del_L
+
+    def get_delF(self):
+        del_F = sympy.zeros(self.num_states,1)
+        for n in range(self.time_points):
+            # Gradient from costs
+            for c in range(self.costs.shape[0]):
+                # states PDE
+                del_F[3*n+0,0] = del_F[3*n+0,0] + sympy.diff(self.costs[c,0],self.state_sym[0,n])
+                del_F[3*n+1,0] = del_F[3*n+1,0] + sympy.diff(self.costs[c,0],self.state_sym[1,n])
+                if n != self.time_points-1:
+                    # control signal PDE
+                    del_F[3*n+2,0] = del_F[3*n+2,0] + sympy.diff(self.costs[c,0],self.state_sym[2,n])
+        self.del_F = del_F
+
+        
+    def get_G(self):
+        # sometimes called del g, this is the jacobian of the constraints.
+        G = sympy.zeros(self.num_constraints, self.num_states)
+        for n in range(self.time_points):
+            for c in range(self.constraints.shape[0]):
+                G[c,3*n]   = sympy.diff(self.constraints[c,0], self.state_sym[0,n])
+                G[c,3*n+1] = sympy.diff(self.constraints[c,0], self.state_sym[1,n])
+                if n != self.time_points-1:
+                    G[c,3*n+2] = sympy.diff(self.constraints[c,0], self.state_sym[2,n])
         self.G = G
 
     def get_Hl(self):
