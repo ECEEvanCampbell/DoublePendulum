@@ -70,6 +70,15 @@ def main():
         controller_resolution = 0.1 # seconds
         controller = dynamic_programming()
         control_policy = controller.get_control_policy(plant_parameters, state_history[:,0], set_point, resolution, controller_resolution, control_options = 10, PLOTTING=True)
+    
+    elif controller_type == 'iLQR':
+        print('in progress!')
+        R = np.array([[1 0 0 0], [0 1 0 0], [0 0 0.1 0], [0 0 0 0.1] ])
+        Q = np.array([0.1])
+        controller_resolution = 0.1
+        control_end_time = 2
+        controller = iterativeLinearQuadraticRegulator()
+        control_sequence = controller.get_control_law(plant_parameters, Q, R, state_history[:,0], set_point, control_end_time, controller_resolution)
     elif controller_type == 'PID':
         print('not coded yet!')
         # Set Point
@@ -807,6 +816,36 @@ class dynamic_programming:
         omega1_id = int(self.set_point[2] / (self.omega1_lim[1]-self.omega1_lim[0]) * self.resolution)
         omega2_id = int(self.set_point[3] / (self.omega2_lim[1]-self.omega2_lim[0]) * self.resolution)
         self.state_cost_per_step[theta1_id, theta2_id, omega1_id, omega2_id] = 0
+
+
+class iterativeLinearQuadraticRegulator:
+    def __init__(self):
+        self.control_type = 'iLQR'
+    
+    def get_control_law(self, plant_parameters, Q, R, initial_conditions, set_point, control_end_time, controller_resolution):
+        self.plant_parameters = plant_parameters
+        self.Q = Q
+        self.R = R
+        self.initial_conditions = initial_conditions
+        self.set_point = set_point
+        self.control_end_time = control_end_time
+        self.controller_resolution = controller_resolution
+
+        # Implement control law
+
+        # LQP = [xi;ui]T [Qi, Si^T; Si, R] [xi; ui] [qi; ri]T [xi; ui]
+        # del ui(x) = ki + Ki xi
+        # Ki = -(R + Bi^T P_{i+1} Bi)^-1 Mi
+        # ki = -(R + Bi^T P_{i+1})^-1 (ri + Bi^T p_{i+1})
+        # where
+        # Mi = Si + Bi^T P_{i+1} Ai
+        # Pi = Qi + Ai^T P_{i+1} Ai - Mi^T (Ri + Bi^T P_{i+1} Bi)^-1 Mi
+        # pi = qi + Ai^T p_{i+1}    - Mi^T (Ri + Bi^T P_{i+1} Bi)^-1 (ri + Bi^T p_{i+1})
+        # start with Pn = P0
+        # iLQR
+        # del ui = ki + Ki xi
+        # x_{i+1} = fi(xi, ui + del ui)
+
 
 def unpack_states(states,num_iter):
     x0 = np.zeros((1,num_iter))
