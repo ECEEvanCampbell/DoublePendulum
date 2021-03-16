@@ -46,7 +46,7 @@ def main():
     set_point = np.asarray([math.pi,0])
 
     # CONTROLLER SETUP
-    controller_type = 'shooting_control'#'none'#
+    controller_type = 'dynamic_programming'#'none'#
     
     if controller_type == 'simultaneous_control':
         controller_resolution = 0.1 # seconds
@@ -58,6 +58,13 @@ def main():
         control_end_time = 2 # seconds
         controller = shooting_control()
         control_sequence = controller.get_control_law(plant_parameters, state_history[:,0], set_point, control_end_time, controller_resolution,3,True)
+    elif controller_type == 'dynamic_programming':
+        print('in progress!')
+        resolution = 21
+        controller_resolution = 0.1 # seconds
+        controller = dynamic_programming()
+        control_policy = controller.get_control_policy(plant_parameters, state_history[:,0], set_point, resolution, controller_resolution, control_options = 50, PLOTTING=True)
+    
     elif controller_type == 'PID':
         print('not coded yet!')
         # Set Point
@@ -77,6 +84,10 @@ def main():
             else:
                 control_signal = 0
             # based on controller_resolution, get the input for this simulation step
+        elif controller_type == 'dynamic_programming':
+            t1 = controller.state_value_to_id(state_history[0,i-1],'t1')
+            o1 = controller.state_value_to_id(state_history[2,i-1],'o1')
+            control_signal = controller.policy_map[t1,o1]
         elif controller_type == 'PID':
             print('not coded yet!')
             # get control signal from error signal and pre-determined kp,kd,ki values
@@ -494,6 +505,128 @@ class shooting_control:
                 if n!= self.time_points-1:
                     Hl[l,3*n+2] = sympy.diff(self.del_F[l,0], self.state_sym[2,n])
         self.Hl = Hl
+
+
+class dynamic_programming:
+    def __init__(self):
+        self.control_type = 'dynamic'
+        # policy map is (theta1, omega1)
+        # theta1 ranges between  -2pi, 2pi
+        self.theta1_lim = (-2*math.pi, 2*math.pi)
+        # omega1 ranges between -5, 5
+        self.omega1_lim = (-5, 5)
+
+    def get_control_policy(self, plant_parameters, initial_conditions, set_point, resolution, control_resolution, control_options = 5, PLOTTING=False):
+        self.plant_parameters = plant_parameters
+        self.initial_condition = initial_conditions
+        self.set_point = set_point
+        self.resolution = resolution
+        self.control_resolution = control_resolution
+        self.control_options = np.linspace(-50.0, 50.0, num=control_options)
+        
+        # initialize with a blank policy
+        self.policy_map = np.zeros((self.resolution, self.resolution), dtype=int)
+        # Define the state cost at the final step to be (t1-setpoint)^2 + (t2-setpoint)^2 + (o1-setpoint)^2 + (o2-setpoint)^2
+        self.state_cost_per_step = self.get_state_cost_per_step()
+        # otherwise, define state cost as shown in class (uniform except the setpoint)
+        #self.state_cost_per_step = self.get_uniform_cost_per_step()
+        self.zero_set_point()
+
+        converged = False
+        last_state_cost = self.state_cost_per_step
+        last_policy_map = np.array(self.policy_map)
+        while not converged:
+            cost_candidate = np.zeros((self.control_options.shape[0]))
+            for t1 in range (self.resolution):
+                for o1 in range ( self.resolution):
+                    for u in range(self.control_options.shape[0]):
+                        # for each discrete state, check where the control action puts the pendulum
+                        (t1i,o1i) = self.advance_dynamics(t1,o1,self.control_options[u])
+                        # what is the cost for this transition (cost = cost of state you land in + abs(control signal applied))
+                        cost_candidate[u] = last_state_cost[t1i,o1i] + 0 * np.abs(self.control_options[u])
+                    # find the control option with the smallest 
+                    best_control = np.argmin(cost_candidate)
+                    # update the policy map w/ the best control option
+                    self.policy_map[t1,o1] = self.control_options[best_control]
+                    # update the 
+                    self.state_cost_per_step[t1,o1] = cost_candidate[best_control]
+            policy_update = np.array(self.policy_map - last_policy_map != 0,dtype=int)
+            if np.sum(policy_update) > 0.05 * policy_update.size:
+                print('not converged')
+            else:
+                converged = True
+            last_policy_map = np.array(self.policy_map)
+            last_state_cost = np.array(self.state_cost_per_step)
+            # Check if converged
+            # converged is defined as less than 1% of the policy changing
+        return self.policy_map
+
+    def state_id_to_value(self, id, identifier):
+        if identifier == 't1':
+            return id * (self.theta1_lim[1]- self.theta1_lim[0]) / self.resolution + self.theta1_lim[0]
+        elif identifier == 'o1':
+            return id * (self.omega1_lim[1]- self.omega1_lim[0]) / self.resolution + self.omega1_lim[0]
+        else:
+            exit()
+
+    def state_value_to_id(self, val, identifier):
+        if identifier == 't1':
+            lims = self.theta1_lim
+        elif identifier == 'o1':
+            lims = self.omega1_lim
+        else:
+            exit()
+        
+        if val < lims[0]:
+            id = 0
+        elif val > lims[1]:
+            id = self.resolution - 1
+        else:
+            id = int(  (val - lims[0]) * self.resolution / (lims[1] - lims[0])  )
+        
+        return id
+
+    def advance_dynamics(self, t1,o1,control_signal):
+
+        t1_val = self.state_id_to_value(t1,'t1')
+        o1_val = self.state_id_to_value(o1,'o1')
+
+        t1_next = t1_val + o1_val * self.control_resolution
+
+        (m1,l1,g) = self.plant_parameters
+
+        alpha1 = (g/l1*math.sin(t1_val) + control_signal)
+        o1_next = o1_val + alpha1 * self.control_resolution
+
+        t1_next = self.state_value_to_id(t1_next,'t1')
+        o1_next = self.state_value_to_id(o1_next,'o1')
+
+        return t1_next, o1_next
+
+
+    def get_state_cost_per_step(self):
+        state_cost_per_step = np.zeros((self.resolution, self.resolution), dtype=float)
+        for t1 in range(self.resolution):
+            t1_val = self.state_id_to_value(t1,'t1')
+            cost_t1 = (t1_val - self.set_point[0])**2
+            
+            for o1 in range(self.resolution):
+                o1_val = self.state_id_to_value(o1,'o1')
+                cost_o1 = (o1_val - self.set_point[1])**2
+                
+                state_cost_per_step[t1,o1] = cost_t1 +  cost_o1
+        return state_cost_per_step
+    
+    def get_uniform_cost_per_step(self):
+        # As per example in class, assign 5 to all states on the map
+        state_cost_per_step = 5*np.ones((self.resolution, self.resolution), dtype=float)
+        return state_cost_per_step
+    
+    def zero_set_point(self):
+        theta1_id = int(self.set_point[0] / (self.theta1_lim[1]-self.theta1_lim[0]) * self.resolution)
+        omega1_id = int(self.set_point[1] / (self.omega1_lim[1]-self.omega1_lim[0]) * self.resolution)
+        self.state_cost_per_step[theta1_id, omega1_id] = 0
+
 
 
 def sequential_shooting_control(plant_parameters, initial_conditions, set_point, end_time, controller_resolution, num_iter=1):
