@@ -6,11 +6,13 @@ DOUBLE PENDULUM SIMULATION:
 3) Angles are measures CCW from downwards facing vector.
 
 """
+from mpl_toolkits.mplot3d import Axes3D  
 
 import numpy as np
 import math
 import matplotlib.pyplot as plt
 from matplotlib import animation
+from matplotlib import cm
 import sympy
 from sympy.tensor.array.sparse_ndim_array import MutableSparseNDimArray
 
@@ -46,7 +48,7 @@ def main():
     set_point = np.asarray([math.pi,0])
 
     # CONTROLLER SETUP
-    controller_type = 'dynamic_programming'#'none'#
+    controller_type = 'simultaneous_control'#dynamic_programming'#'none'#dynamic_programming# simultaneous_control
     
     if controller_type == 'simultaneous_control':
         controller_resolution = 0.1 # seconds
@@ -60,10 +62,10 @@ def main():
         control_sequence = controller.get_control_law(plant_parameters, state_history[:,0], set_point, control_end_time, controller_resolution,3,True)
     elif controller_type == 'dynamic_programming':
         print('in progress!')
-        resolution = 21
+        resolution = 51
         controller_resolution = 0.1 # seconds
         controller = dynamic_programming()
-        control_policy = controller.get_control_policy(plant_parameters, state_history[:,0], set_point, resolution, controller_resolution, control_options = 50, PLOTTING=True)
+        control_policy = controller.get_control_policy(plant_parameters, state_history[:,0], set_point, resolution, controller_resolution, control_options = 10, PLOTTING=True)
     
     elif controller_type == 'PID':
         print('not coded yet!')
@@ -86,7 +88,7 @@ def main():
             # based on controller_resolution, get the input for this simulation step
         elif controller_type == 'dynamic_programming':
             t1 = controller.state_value_to_id(state_history[0,i-1],'t1')
-            o1 = controller.state_value_to_id(state_history[2,i-1],'o1')
+            o1 = controller.state_value_to_id(state_history[1,i-1],'o1')
             control_signal = controller.policy_map[t1,o1]
         elif controller_type == 'PID':
             print('not coded yet!')
@@ -123,7 +125,7 @@ def plant_update(states, control_signal, plant_parameters):
     
     alpha1 = states[2]
     
-    dd_theta1 = (g/l1*math.sin(theta1) + control_signal)
+    dd_theta1 = (- g/l1*math.sin(theta1) + control_signal)# TODO: investigate whether there should be a negative sign here
     return dd_theta1
 
 def simulation_advance(states, state_change, simulation_resolution):
@@ -243,7 +245,7 @@ class simultaneous_control:
             # x0n
             constraints.append(self.lambdas[0,2*(n-1)+0] * (self.state_sym[0,n]-self.state_sym[0,n-1]- self.state_sym[1,n-1]*self.controller_resolution))
             # x1n
-            constraints.append(self.lambdas[0,2*(n-1)+1] * (self.state_sym[1,n]-self.state_sym[1,n-1]- (g/l1*sympy.sin(self.state_sym[0,n-1]) + self.state_sym[2,n-1])*self.controller_resolution))
+            constraints.append(self.lambdas[0,2*(n-1)+1] * (self.state_sym[1,n]-self.state_sym[1,n-1]- (- g/l1*sympy.sin(self.state_sym[0,n-1]) + self.state_sym[2,n-1])*self.controller_resolution))
             
         # Initial conditions boundary
         constraints.append(self.lambdas[0,2*(n)+0]  *  (self.state_sym[0,0] - self.initial_conditions[0])**2 )
@@ -318,10 +320,10 @@ class simultaneous_control:
         Hl = sympy.zeros(self.num_states, self.num_states)
         for l in range(self.del_L.shape[0]):
             for n in range(self.time_points):
-                Hl[l,3*n]   = sympy.diff(self.del_F[l,0], self.state_sym[0,n])
-                Hl[l,3*n+1] = sympy.diff(self.del_F[l,0], self.state_sym[1,n])
+                Hl[l,3*n]   = sympy.diff(self.del_L[l,0], self.state_sym[0,n])
+                Hl[l,3*n+1] = sympy.diff(self.del_L[l,0], self.state_sym[1,n])
                 if n!= self.time_points-1:
-                    Hl[l,3*n+2] = sympy.diff(self.del_F[l,0], self.state_sym[2,n])
+                    Hl[l,3*n+2] = sympy.diff(self.del_L[l,0], self.state_sym[2,n])
         self.Hl = Hl
 
 
@@ -532,6 +534,19 @@ class dynamic_programming:
         #self.state_cost_per_step = self.get_uniform_cost_per_step()
         self.zero_set_point()
 
+        fig = plt.figure()
+        ax = fig.gca(projection='3d')
+        Theta = np.arange(-2*math.pi, 2*math.pi, 4*math.pi/self.resolution)
+        DTheta = np.arange(-5,5, 10/self.resolution)
+        Theta, DTheta = np.meshgrid(Theta, DTheta)
+        
+        surf = ax.plot_surface(Theta, DTheta, self.state_cost_per_step, cmap = cm.coolwarm, linewidth=0, antialiased=False)
+        ax.set_xlabel('DTheta')
+        ax.set_ylabel('Theta')
+        ax.set_zlabel('U')
+        fig.colorbar(surf, shrink=0.5, aspect=5)
+        plt.show()
+
         converged = False
         last_state_cost = self.state_cost_per_step
         last_policy_map = np.array(self.policy_map)
@@ -542,8 +557,8 @@ class dynamic_programming:
                     for u in range(self.control_options.shape[0]):
                         # for each discrete state, check where the control action puts the pendulum
                         (t1i,o1i) = self.advance_dynamics(t1,o1,self.control_options[u])
-                        # what is the cost for this transition (cost = cost of state you land in + abs(control signal applied))
-                        cost_candidate[u] = last_state_cost[t1i,o1i] + 0 * np.abs(self.control_options[u])
+                        # what is the cost for this transition (cost = cost of where you were + cost of state you land in + abs(control signal applied))
+                        cost_candidate[u] = last_state_cost[t1,o1] + last_state_cost[t1i,o1i]# + 0.05 * np.abs(self.control_options[u])
                     # find the control option with the smallest 
                     best_control = np.argmin(cost_candidate)
                     # update the policy map w/ the best control option
@@ -551,7 +566,7 @@ class dynamic_programming:
                     # update the 
                     self.state_cost_per_step[t1,o1] = cost_candidate[best_control]
             policy_update = np.array(self.policy_map - last_policy_map != 0,dtype=int)
-            if np.sum(policy_update) > 0.05 * policy_update.size:
+            if np.sum(policy_update) > 0.01 * policy_update.size:
                 print('not converged')
             else:
                 converged = True
@@ -559,6 +574,19 @@ class dynamic_programming:
             last_state_cost = np.array(self.state_cost_per_step)
             # Check if converged
             # converged is defined as less than 1% of the policy changing
+        
+        fig = plt.figure()
+        ax = fig.gca(projection='3d')
+        Theta = np.arange(-2*math.pi, 2*math.pi, 4*math.pi/self.resolution)
+        DTheta = np.arange(-5,5, 10/self.resolution)
+        Theta, DTheta = np.meshgrid(Theta, DTheta)
+        
+        surf = ax.plot_surface(Theta, DTheta, self.policy_map, cmap = cm.coolwarm, linewidth=0, antialiased=False)
+        ax.set_xlabel('DTheta')
+        ax.set_ylabel('Theta')
+        ax.set_zlabel('U')
+        fig.colorbar(surf, shrink=0.5, aspect=5)
+        plt.show()
         return self.policy_map
 
     def state_id_to_value(self, id, identifier):
@@ -595,7 +623,7 @@ class dynamic_programming:
 
         (m1,l1,g) = self.plant_parameters
 
-        alpha1 = (g/l1*math.sin(t1_val) + control_signal)
+        alpha1 = (- g/l1*math.sin(t1_val) + control_signal)
         o1_next = o1_val + alpha1 * self.control_resolution
 
         t1_next = self.state_value_to_id(t1_next,'t1')
@@ -623,8 +651,8 @@ class dynamic_programming:
         return state_cost_per_step
     
     def zero_set_point(self):
-        theta1_id = int(self.set_point[0] / (self.theta1_lim[1]-self.theta1_lim[0]) * self.resolution)
-        omega1_id = int(self.set_point[1] / (self.omega1_lim[1]-self.omega1_lim[0]) * self.resolution)
+        theta1_id = int((self.set_point[0] - self.theta1_lim[0]) / (self.theta1_lim[1]-self.theta1_lim[0]) * self.resolution)
+        omega1_id = int((self.set_point[1] - self.omega1_lim[0])/ (self.omega1_lim[1]-self.omega1_lim[0]) * self.resolution)
         self.state_cost_per_step[theta1_id, omega1_id] = 0
 
 

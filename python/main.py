@@ -17,8 +17,8 @@ from sympy.tensor.array.sparse_ndim_array import MutableSparseNDimArray
 def main():
 
     # SIMULATION PARAMETERS
-    simulation_time = 4 # seconds
-    simulation_resolution = 0.01 # seconds
+    simulation_time = 2 # seconds
+    simulation_resolution = 0.1 # seconds
     simulation_steps = int(simulation_time / simulation_resolution) # How many times the simulation will run
 
     # VISUALIZATION PARAMETERS
@@ -48,14 +48,14 @@ def main():
     set_point = np.asarray([math.pi, math.pi, 0,0,0,0])
 
     # CONTROLLER SETUP
-    controller_type = 'dynamic_programming'#'none'#
+    controller_type = 'simultaneous_control'#'none'#dynamic_programming
     
     if controller_type == 'simultaneous_control':
         print('in progress!')
         controller_resolution = 0.1 # seconds
         control_end_time = 2 # seconds
         controller = simultaneous_control()
-        control_sequence = controller.get_control_law(plant_parameters, state_history[:,0], set_point, control_end_time, controller_resolution,1,True)
+        control_sequence = controller.get_control_law(plant_parameters, state_history[:,0], set_point, control_end_time, controller_resolution,5,True)
 
     elif controller_type == 'shooting_control':
         print('in progress!')
@@ -73,7 +73,7 @@ def main():
     
     elif controller_type == 'iLQR':
         print('in progress!')
-        R = np.array([[1 0 0 0], [0 1 0 0], [0 0 0.1 0], [0 0 0 0.1] ])
+        R = np.array([[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 0.1, 0], [0, 0, 0, 0.1] ])
         Q = np.array([0.1])
         controller_resolution = 0.1
         control_end_time = 2
@@ -417,14 +417,14 @@ class simultaneous_control:
 
     def get_Hl(self):
         Hl = sympy.zeros(self.num_states, self.num_states)
-        for l in range(self.del_L.shape[0]):
+        for l in range(self.del_F.shape[0]):
             for n in range(self.time_points):
-                Hl[l,5*n]   = sympy.diff(self.del_F[l,0], self.state_sym[0,n])
-                Hl[l,5*n+1] = sympy.diff(self.del_F[l,0], self.state_sym[1,n])
-                Hl[l,5*n+2] = sympy.diff(self.del_F[l,0], self.state_sym[2,n])
-                Hl[l,5*n+3] = sympy.diff(self.del_F[l,0], self.state_sym[3,n])
+                Hl[l,5*n]   = sympy.diff(self.del_L[l,0], self.state_sym[0,n])
+                Hl[l,5*n+1] = sympy.diff(self.del_L[l,0], self.state_sym[1,n])
+                Hl[l,5*n+2] = sympy.diff(self.del_L[l,0], self.state_sym[2,n])
+                Hl[l,5*n+3] = sympy.diff(self.del_L[l,0], self.state_sym[3,n])
                 if n!= self.time_points-1:
-                    Hl[l,5*n+4] = sympy.diff(self.del_F[l,0], self.state_sym[4,n])
+                    Hl[l,5*n+4] = sympy.diff(self.del_L[l,0], self.state_sym[4,n])
         self.Hl = Hl
 
 
@@ -660,9 +660,9 @@ class dynamic_programming:
         # theta2 ranges between  -2pi, 2pi
         self.theta2_lim = (-2*math.pi, 2*math.pi)
         # omega1 ranges between -5, 5
-        self.omega1_lim = (-5, 5)
+        self.omega1_lim = (-10, 10)
         # omega2 ranges between -5, 5
-        self.omega2_lim = (-5, 5)
+        self.omega2_lim = (-10, 10)
 
     def get_control_policy(self, plant_parameters, initial_conditions, set_point, resolution, control_resolution, control_options = 5, PLOTTING=False):
         self.plant_parameters = plant_parameters
@@ -692,8 +692,8 @@ class dynamic_programming:
                             for u in range(self.control_options.shape[0]):
                                 # for each discrete state, check where the control action puts the pendulum
                                 (t1i,t2i,o1i,o2i) = self.advance_dynamics(t1,t2,o1,o2,self.control_options[u])
-                                # what is the cost for this transition (cost = cost of state you land in + abs(control signal applied))
-                                cost_candidate[u] = last_state_cost[t1i,t2i,o1i,o2i] + 0 * np.abs(self.control_options[u])
+                                # what is the cost for this transition (cost = cost of where you are + cost of state you land in + abs(control signal applied))
+                                cost_candidate[u] = last_state_cost[t1,t2,o1,o2] + last_state_cost[t1i,t2i,o1i,o2i] + 0 * np.abs(self.control_options[u])
                             # find the control option with the smallest 
                             best_control = np.argmin(cost_candidate)
                             # update the policy map w/ the best control option
@@ -811,10 +811,10 @@ class dynamic_programming:
         return state_cost_per_step
     
     def zero_set_point(self):
-        theta1_id = int(self.set_point[0] / (self.theta1_lim[1]-self.theta1_lim[0]) * self.resolution)
-        theta2_id = int(self.set_point[1] / (self.theta2_lim[1]-self.theta2_lim[0]) * self.resolution)
-        omega1_id = int(self.set_point[2] / (self.omega1_lim[1]-self.omega1_lim[0]) * self.resolution)
-        omega2_id = int(self.set_point[3] / (self.omega2_lim[1]-self.omega2_lim[0]) * self.resolution)
+        theta1_id = int((self.set_point[0] - self.theta1_lim[0])/ (self.theta1_lim[1]-self.theta1_lim[0])  * self.resolution)
+        theta2_id = int((self.set_point[1] - self.theta2_lim[0]) / (self.theta2_lim[1]-self.theta2_lim[0]) * self.resolution)
+        omega1_id = int((self.set_point[2] - self.omega1_lim[0]) / (self.omega1_lim[1]-self.omega1_lim[0]) * self.resolution)
+        omega2_id = int((self.set_point[3] - self.omega2_lim[0]) / (self.omega2_lim[1]-self.omega2_lim[0]) * self.resolution)
         self.state_cost_per_step[theta1_id, theta2_id, omega1_id, omega2_id] = 0
 
 

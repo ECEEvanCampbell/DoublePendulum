@@ -1,0 +1,13 @@
+Simultaneous_control setup took: 136.6871 seconds.
+Simultaneous_control iteration 1 took: 12.8824 seconds.
+Simultaneous_control iteration 2 took: 25.788 seconds.
+Simultaneous_control iteration 3 took: 38.6745 seconds.
+Simultaneous_control iteration 4 took: 51.5768 seconds.
+Simultaneous_control iteration 5 took: 64.4939 seconds.
+Simultaneous_control iteration 6 took: 77.4039 seconds.
+Simultaneous_control iteration 7 took: 90.3312 seconds.
+Simultaneous_control iteration 8 took: 103.2325 seconds.
+Simultaneous_control iteration 9 took: 116.2084 seconds.
+Simultaneous_control iteration 10 took: 130.5592 seconds.
+
+-- 2 seconds, 0.1 second interval. 10 iterations
