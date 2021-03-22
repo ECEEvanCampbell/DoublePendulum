@@ -13,10 +13,11 @@ plant_parameters = [g, m1, l1];
 start_position = [pi/4; 0];
 set_point      = [pi; 0];
 
-
+% simulation -- wrap theta correctly
+theta_lims = [0, 2*pi];
 
 %% controller setup
-controller = 1;
+controller = 3;
 % 0 - no control
 % 1 - direct simultaneous control
 % 2 - direct shooting control
@@ -24,8 +25,7 @@ controller = 1;
 % 4 - iterative linear quadratic gaussian
 % 5 - actor critic network
 % Control system parameters 
-control_duration = 2; % seconds
-control_interval = 0.1; % seconds
+
 
 % Equations of motion
 syms theta theta_dot control
@@ -34,15 +34,23 @@ c_thetadot_update = @(theta, theta_dot, control) theta_dot + (-g/l1 * sin(theta)
 
 if controller == 1
     % simultaneous control
-    iterations = 5;
+    control_duration = 2; % seconds
+    control_interval = 0.1; % seconds
+    iterations = 1;
     [control_law, TIMINGS] = simultaneous_control(plant_parameters, start_position, set_point, control_duration, control_interval, iterations, 1);
     
 elseif controller == 2
     % shooting control
-    
+    control_duration = 2; % seconds
+    control_interval = 0.1; % seconds
+    % TODO
 elseif controller == 3
     % dynamic programmming
-    
+    state_resolution = 101; % how quantized is the plane
+    control_resolution = 10; % how quantized are the control options
+    time_resolution = 0.1; % how long are control signals applied (required for shooting)
+    [control_policy, theta_bins, omega_bins, theta_lims, omega_lims, TIMINGS] = dynamic_programming(plant_parameters, set_point, state_resolution, control_resolution, time_resolution, 1);
+
 elseif controller == 4
     % iterative linear quadratic gaussian
     
@@ -56,7 +64,7 @@ end
 %% simulation of control law / policy
 
 % Simulation setup
-simulation_duration = 5; % seconds
+simulation_duration = 10; % seconds
 simulation_interval = 0.1; % seconds
 state_history = zeros(2,simulation_duration / simulation_interval + 1);
 state_history(:,1) = start_position;
@@ -69,7 +77,7 @@ s_thetadot_update = @(theta, theta_dot, control) theta_dot + (-g/l1 * sin(theta)
 h = figure();
 filename = ['single_pendulum_' num2str(controller) '.gif'];
 for i = 1: simulation_duration / simulation_interval
-
+    state_history(1,i) = mod(state_history(1,i), theta_lims(2) - theta_lims(1)) + theta_lims(1);
     if controller == 0
         control_signal = 0;
     elseif controller == 1
@@ -78,6 +86,12 @@ for i = 1: simulation_duration / simulation_interval
         else
             control_signal = control_law(ceil(i*simulation_interval / control_interval));
         end
+    elseif controller == 2
+        break
+    elseif controller == 3
+        [~,discrete_t] = min( abs(state_history(1,i)-theta_bins));
+        [~,discrete_o] = min( abs(state_history(2,i)-omega_bins));
+        control_signal = control_policy(discrete_t,discrete_o);
     end
     
     % compute cost
@@ -111,7 +125,7 @@ for i = 1: simulation_duration / simulation_interval
     ylabel('quadratic cost')
     title('Cost')
     xlim([0 simulation_duration/simulation_interval])
-    ylim([0 30])
+    ylim([0 50])
     
 
 
