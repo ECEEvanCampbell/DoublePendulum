@@ -23,7 +23,7 @@ L = sym('L', [num_constraints, 1]);
 % cost functions
 costs = cell(time_points*3-1,1);
 for n = 1:time_points
-    costs{3*(n-1) + 1} = (S(1,n) - set_point(1))^2;
+    costs{3*(n-1) + 1} = 10*(S(1,n) - set_point(1))^2;
     costs{3*(n-1) + 2} = (S(2,n) - set_point(2))^2;
     if n ~= time_points
         costs{3*(n-1) + 3} =  (S(3,n))^2;
@@ -133,7 +133,7 @@ if PLOTTING
     ylabel('Control Signal')
 end
 
-control_sequence = state_history(3:3:num_states);
+control_sequence = state_history(end,3:3:num_states);
 
 end
 

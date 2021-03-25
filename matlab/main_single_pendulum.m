@@ -17,7 +17,7 @@ set_point      = [pi; 0];
 theta_lims = [0, 2*pi];
 
 %% controller setup
-controller = 3;
+controller = 4;
 % 0 - no control
 % 1 - direct simultaneous control
 % 2 - direct shooting control
@@ -36,7 +36,7 @@ if controller == 1
     % simultaneous control
     control_duration = 2; % seconds
     control_interval = 0.1; % seconds
-    iterations = 1;
+    iterations = 5;
     [control_law, TIMINGS] = simultaneous_control(plant_parameters, start_position, set_point, control_duration, control_interval, iterations, 1);
     
 elseif controller == 2
@@ -52,7 +52,11 @@ elseif controller == 3
     [control_policy, theta_bins, omega_bins, theta_lims, omega_lims, TIMINGS] = dynamic_programming(plant_parameters, set_point, state_resolution, control_resolution, time_resolution, 1);
 
 elseif controller == 4
-    % iterative linear quadratic gaussian
+    % iterative linear quadratic regulator
+    control_duration = 2;
+    control_interval = 0.1;
+    [k,K, X_traj, control_law,TIMINGS] = iterativelinearquadraticregulator(plant_parameters, start_position, set_point, control_duration, control_interval, 1);
+    
     
 elseif controller == 5
     % actor critic network
@@ -64,15 +68,15 @@ end
 %% simulation of control law / policy
 
 % Simulation setup
-simulation_duration = 10; % seconds
-simulation_interval = 0.1; % seconds
+simulation_duration = 2; % seconds
+simulation_interval = 0.01; % seconds
 state_history = zeros(2,simulation_duration / simulation_interval + 1);
 state_history(:,1) = start_position;
 cost_values = zeros(1, simulation_duration/simulation_interval);
 s_theta_update =  @(theta, theta_dot) theta + theta_dot * simulation_interval;
 s_thetadot_update = @(theta, theta_dot, control) theta_dot + (-g/l1 * sin(theta) -0.7*theta_dot + control) * simulation_interval;
 
-
+rk_thetadotdot = @(theta, theta_dot,control) -g/l1 * sin(theta) -0.7*theta_dot + control;
 
 h = figure();
 filename = ['single_pendulum_' num2str(controller) '.gif'];
@@ -92,6 +96,17 @@ for i = 1: simulation_duration / simulation_interval
         [~,discrete_t] = min( abs(state_history(1,i)-theta_bins));
         [~,discrete_o] = min( abs(state_history(2,i)-omega_bins));
         control_signal = control_policy(discrete_t,discrete_o);
+    elseif controller == 4
+        if i == 1
+            control_signal = 0;
+        end
+        if i * simulation_interval > control_duration - control_interval
+            control_signal = 0;
+        else
+            control_id = ceil(i*simulation_interval / control_interval);
+            %control_signal = control_signal + k(control_id) + squeeze(K(control_id,:,:))' * (set_point-state_history(:,i));
+            control_signal = control_law(control_id);
+        end
     end
     
     % compute cost
@@ -139,14 +154,32 @@ for i = 1: simulation_duration / simulation_interval
     end
     
     % compute update for next iteration
-    state_history(1,i+1) = s_theta_update(state_history(1,i), state_history(2,i));
-    state_history(2,i+1) = s_thetadot_update(state_history(1,i), state_history(2,i), control_signal);
+    
+    k1 = rk_dynamics(state_history(:,i), control_signal, plant_parameters)';
+    k2 = rk_dynamics(state_history(:,i) + simulation_interval/2 * k1, control_signal, plant_parameters)';
+    k3 = rk_dynamics(state_history(:,i) + simulation_interval/2 * k2, control_signal, plant_parameters)';
+    k4 = rk_dynamics(state_history(:,i) + simulation_interval * k3, control_signal, plant_parameters)';
+    
+    state_history(:,i+1) = state_history(:,i) + simulation_interval/6*(k1+2*k2+2*k3+k4);
+    
+    
+    %state_history(1,i+1) = s_theta_update(state_history(1,i), state_history(2,i));
+    %state_history(2,i+1) = s_thetadot_update(state_history(1,i), state_history(2,i), control_signal);
     
     
 end
 
 
+function states_dot = rk_dynamics(states,control, plant_parameters)
 
+g = plant_parameters(1);
+m1 = plant_parameters(2);
+l1 = plant_parameters(3);
+
+states_dot(1) = states(2);
+states_dot(2) = (-g/l1 * sin(states(1)) -0.7*states(2) + control);
+
+end
 % 
 % 
 % df_theta_theta       = diff(f_theta_update, theta);
